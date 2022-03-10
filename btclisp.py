@@ -364,27 +364,21 @@ def op_div():
         yield from gargs.check()
     yield Element(n=i)
 
-def special_env(env):
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    n = yield from gargs.get_arg(err="div: missing arguments")
-    orig_n = n.as_int("env")
-    n.deref()
-    n = orig_n
-    if n <= 0:
-        raise Exception("env: argument out of range: %s" % (n,))
-    while n > 1:
-        if not env.is_list():
-            raise Exception("env: invalid env path %d" % (orig_n))
-        n, x = divmod(n, 2)
-        env = env.t if x else env.h
-    yield env.bumpref()
-
 def steal_list(l):
     assert isinstance(l, Element) and l.is_list()
     h, t = l.h.bumpref(), l.t.bumpref()
     l.deref()
     return h, t
+
+def get_env(n, env):
+    if n < 0:
+        raise Exception("env argument out of range: %s" % (n,))
+    while n > 1:
+        if not env.is_list():
+            raise Exception("invalid env path %d" % (n,))
+        n, x = divmod(n, 2)
+        env = env.t if x else env.h
+    return env
 
 def eval(baseenv, inst):
    assert isinstance(baseenv, Element)
@@ -403,13 +397,16 @@ def eval(baseenv, inst):
        assert isinstance(args, Element)
        result = None
 
-       if args.is_atom():
-           if gen is None:
-               result = args.bumpref()
-           elif args.is_nil():
+       if args.is_nil():
+           if gen is not None:
                result = gen.send(None)
            else:
+               result = args.bumpref()
+       elif args.is_atom():
+           if gen is not None:
                raise Exception("args terminated with non-list")
+           else:
+               raise Exception("huh")
        else:
            arg, args = steal_list(args)
 
@@ -424,19 +421,21 @@ def eval(baseenv, inst):
                if opcode == "q":
                    result = args.bumpref()
                else:
-                   if opcode == "env":
-                       gen = special_env(env)
-                   else:
-                       o = "op_" + opcode
-                       if not o in globals():
-                           raise Exception("unknown operator: %s" % (o,))
-                       gen = globals()[o]()
+                   o = "op_" + opcode
+                   if not o in globals():
+                       raise Exception("unknown operator: %s" % (o,))
+                   gen = globals()[o]()
                    gen.send(None)
                    work.append( (what, env, gen, args) )
                    continue
            else:
                if arg.is_atom():
-                   gen.send(arg)
+                   if arg.is_nil():
+                       gen.send(arg)
+                   else:
+                       n = arg.as_int("env")
+                       arg.deref()
+                       gen.send(get_env(n, env).bumpref())
                    work.append( (what, env, gen, args) )
                else:
                    work.append( (what, env, gen, args) )
@@ -501,30 +500,31 @@ class Rep:
         p.deref()
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
-rep("(add 2 2 . 0)")
-rep("(add 2 2)")
-rep("(a (q add 2 2))")
-rep("(env 1)")
-rep("(env 4)")
-rep("(c (env 4) (env 6) (env 5) (env 7) 0)")
-rep("(sub 77 (mul 3 (div 77 3)))")
-rep("(c 1 2 3 4 (c 5 (q 6 7)))")
+print("Env: %s" % (rep.env))
+rep("(add (q . 2) (q . 2) . 0)")
+rep("(add (q . 2) (q . 2))")
+rep("(a (q add (q . 2) (q . 2)))")
+rep("(c 1 ())")
+rep("(c 4 ())")
+rep("(c 4 6 5 7 0)")
+rep("(sub (q . 77) (mul (q . 3) (div (q . 77) (q . 3))))")
+rep("(c (q . 1) (q . 2) (q . 3) (q . 4) (c (q . 5) (q 6 7)))")
 rep("(f (q 4))")
-rep("(add (env 7) 3)")
-rep("(a (q add (env 7) 3))")
-rep("(a (q add (env 7) 3) (env 1))")
-rep("(a (q add (env 7) 3) (c (q 1 . 2) (env 3)))")
-rep("(a (q add (env 7) 3) (q (1 . 2) . (3 . 4)))")
-rep("(add 2 2)")
-rep("(c 2 2)")
+rep("(add 7 (q . 3))")
+rep("(a (q add 7 (q . 3)))")
+rep("(a (q add 7 (q . 3)) 1)")
+rep("(a (q add 7 (q . 3)) (c (q 1 . 2) 3))")
+rep("(a (q add 7 (q . 3)) (q (1 . 2) . (3 . 4)))")
+rep("(add (q . 2) (q . 2))")
+rep("(c (q . 2) (q . 2))")
 
 # factorial
 
-rep = Rep(SExpr.parse("(a (i (env 2) (q mul (env 2) (a (env 5) (c (sub (env 2) 1) (env 3)))) (q mul)))"))
-rep("(a (env 1) (c 50 (env 1) ()))")
+#rep = Rep(SExpr.parse("(a (i (env 2) (q mul (env 2) (a (env 5) (c (sub (env 2) 1) (env 3)))) (q mul)))"))
+#rep("(a (env 1) (c 50 (env 1) ()))")
 
-rep = Rep(SExpr.parse("(a (i (env 4) (q a (env 5) (c (c (sub (env 4) 1) (mul (env 4) (env 10)) ()) (env 3))) (q env 10)))"))
-rep("(a (env 1) (c (q 50 1) (env 1) ()))")
+#rep = Rep(SExpr.parse("(a (i (env 4) (q a (env 5) (c (c (sub (env 4) 1) (mul (env 4) (env 10)) ()) (env 3))) (q env 10)))"))
+#rep("(a (env 1) (c (q 50 1) (env 1) ()))")
 
 
 # fibonacci
