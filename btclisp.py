@@ -123,20 +123,7 @@ class Element:
             raise Exception(f"{fn}: not a number: {self}")
         return int.from_bytes(self.n, byteorder='big', signed=True)
 
-    def xxx__iter__(self):
-        x = self
-        while x.is_list():
-            yield x.h
-            x = x.t
-        assert x.is_nil()
-
 class SExpr:
-    def __init__(self, d=None):
-        if d is None:
-            d = Element.nil
-        assert isinstance(d, Element)
-        self.d = d
-
     re_parse = re.compile('(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<atom>[^()\s.]+)')
     re_int = re.compile("^-?\d+$")
     re_hex = re.compile("^0x[0-9a-fA-F]+$")
@@ -206,9 +193,6 @@ class SExpr:
 
         else:
             return cls.list_to_element(parstack[0])
-
-    def __init__(self, env=None):
-       self.env = [] if env is None else env
 
 class GenArgs:
     def __init__(self):
@@ -380,7 +364,7 @@ def get_env(n, env):
         env = env.t if x else env.h
     return env
 
-def eval(baseenv, inst):
+def eval(baseenv, inst, debug):
    assert isinstance(baseenv, Element)
    assert isinstance(inst, Element)
 
@@ -389,10 +373,11 @@ def eval(baseenv, inst):
    while work:
        (what, env, gen, args) = work.pop()
 
-       if env is baseenv:
-           pass #print(f'  depth={len(work)} ENV {args} {gen}')
-       else:
-           pass #print(f'  depth={len(work)} {env} {args} {gen}')
+       if debug:
+           if env is baseenv:
+               print(f'  depth={len(work)} ENV {args} {gen}')
+           else:
+               print(f'  depth={len(work)} <{env}> {args} {gen}')
 
        assert isinstance(args, Element)
        result = None
@@ -444,7 +429,7 @@ def eval(baseenv, inst):
 
        assert result is not None
 
-       #print(f'  fin --> {result}')
+       if debug: print(f'  fin --> {result}')
        # tail call (a)
        if isinstance(result, list):
            if result[0] is not None:
@@ -465,7 +450,7 @@ def eval(baseenv, inst):
            return result
 
        assert len(work) > 0
-       #print(f"RES {what} {result}")
+       if debug: print(f"RES {what} {result}")
        if what == 1:
            # recursion to decide instruction
            if result.is_list():
@@ -484,14 +469,15 @@ def eval(baseenv, inst):
    assert False, "BUG: unreachable"
 
 class Rep:
-    def __init__(self, env):
+    def __init__(self, env, debug=False):
         self.env = env
+        self.debug = debug
 
     def __call__(self, program):
         ALLOCATOR.max = 0
         p = SExpr.parse(program, many=False)
         try:
-            r = eval(self.env, p)
+            r = eval(self.env, p, debug=self.debug)
             print("MAX=%s ; %s -> %s" % (ALLOCATOR.max, program, r))
             r.deref()
         except:
