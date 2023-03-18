@@ -99,9 +99,8 @@ We implement the plain recursive version as follows:
    when `n` is non-zero and the right branch when `n` is zero. This means
    we need to quote both branches to avoid eager evaluation.
 
- * The base case (right branch) we write as `(q mul)` which when passed
-   to `(a)` evaluates to `(mul)` which then evaluates to `1` (since we're
-   not actually multiplying anything).
+ * The base case (right branch) we write as `(q . 1)` which just evaluates
+   to `1`.
 
  * The recursive case (left branch) we write as `(q mul 2 ...)`, that is
    we will multiply `n` by a recursive formula. The recursive formula is
@@ -124,3 +123,5 @@ The iterative/tail-recursive approach is implemented similarly:
 
  * The base case now requires returning the accumulated value, so it
    becomes `(q c 5)`.
+
+ * We then call this by invoking `(a 1 (c (q . 150) (q . 1) 1))`

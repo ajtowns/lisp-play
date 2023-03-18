@@ -391,7 +391,7 @@ def eval(baseenv, inst, debug):
            if gen is not None:
                raise Exception("args terminated with non-list")
            else:
-               raise Exception("huh")
+               result = args.bumpref()
        else:
            arg, args = steal_list(args)
 
@@ -488,6 +488,8 @@ class Rep:
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
 print("Env: %s" % (rep.env))
+rep("1")
+rep("(q . 1)")
 rep("(add (q . 2) (q . 2) . 0)")
 rep("(add (q . 2) (q . 2))")
 rep("(a (q add (q . 2) (q . 2)))")
@@ -507,7 +509,7 @@ rep("(c (q . 2) (q . 2))")
 
 # factorial
 
-rep = Rep(SExpr.parse("(a (i 2 (q mul 2 (a 3 (c (sub 2 (q . 1)) 3))) (q mul)))"))
+rep = Rep(SExpr.parse("(a (i 2 (q mul 2 (a 3 (c (sub 2 (q . 1)) 3))) (q . 1)))"))
 rep("(a 1 (c (q . 150) 1))")
 
 
