@@ -473,11 +473,12 @@ class Rep:
         self.env = env
         self.debug = debug
 
-    def __call__(self, program):
+    def __call__(self, program, debug=None):
+        if debug is None: debug = self.debug
         ALLOCATOR.max = 0
         p = SExpr.parse(program, many=False)
         try:
-            r = eval(self.env, p, debug=self.debug)
+            r = eval(self.env, p, debug=debug)
             print("MAX=%s ; %s -> %s" % (ALLOCATOR.max, program, r))
             r.deref()
         except:
