@@ -110,6 +110,11 @@ We implement the plain recursive version as follows:
 
  * We then call this by invoking `(a 1 (c (q . 150) 1))`
 
+This gives the following result:
+
+`MAX=5016 ; (a 1 (c (q . 150) 1)) -> 01d07da7ecb62cbddc2a166afb4cb7ed3175b5eb8e806e18cb2b4f4be3bbe2e3dc8207bf84713210a5db6d998a9ccff80c548cfe68ad9ca5e8e3945a223632785ec7de448c0724a0699433ff5aea1297e14dd8d12a5b851fb7c19284000000000000000000000000000000000000`
+
+
 The iterative/tail-recursive approach is implemented similarly:
 
  * We setup the environment as `(n acc . f)` so `n` is again accessed as
@@ -125,3 +130,9 @@ The iterative/tail-recursive approach is implemented similarly:
    becomes `(q c 5)`.
 
  * We then call this by invoking `(a 1 (c (q . 150) (q . 1) 1))`
+
+This results in:
+
+`MAX=1756 ; (a 1 (c (q . 150) (q . 1) 1)) -> 01d07da7ecb62cbddc2a166afb4cb7ed3175b5eb8e806e18cb2b4f4be3bbe2e3dc8207bf84713210a5db6d998a9ccff80c548cfe68ad9ca5e8e3945a223632785ec7de448c0724a0699433ff5aea1297e14dd8d12a5b851fb7c19284000000000000000000000000000000000000`
+
+which requires significantly less memory to calculate.
