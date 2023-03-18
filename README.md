@@ -57,6 +57,22 @@
 
  - Creates a read-eval-print object.
 
+### Op codes
+
+ - `(a LIST ENV)` - "apply" -- evaluate `LIST` with the environemnt `ENV`.
+ - `(x ...)` - "exception" -- fail execution with an error message
+ - `(i COND TRUE FALSE) - "if" -- if `COND` is not nil evaluates as `TRUE`;
+   otherwise evaluates as `FALSE` if supplied, or `nil` otherwise.
+ - `(f LIST)` - "first" -- returns the first element of `LIST`
+ - `(r LIST)` - "rest" -- returns the tail of `LIST`
+ - `(c EL1 EL2 .. TAIL)` - "concat" -- returns a LIST where the first
+   elements are EL1, EL2, etc and the remainder is TAIL. Note that `(c T)`
+   just returns `T`.
+ - `(add N1 N2 ..)` -- adds numbers, returns 0 if no numbers
+ - `(mul N1 N2 ..)` -- multiplies numbers, returns 1 if no numbers
+ - `(sub K N1 N2...)` -- subtracts numbers from `K`, `K` must be provided
+ - `(div K N1 N2...)` -- integer division of `K`, `K` must be provided
+
 ### Example
 
 We can calculate a factorial recursively or iteratively. Recursively,
