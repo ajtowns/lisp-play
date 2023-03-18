@@ -520,11 +520,11 @@ rep("(c (q . 2) (q . 2))")
 
 # factorial
 
-#rep = Rep(SExpr.parse("(a (i (env 2) (q mul (env 2) (a (env 5) (c (sub (env 2) 1) (env 3)))) (q mul)))"))
-#rep("(a (env 1) (c 50 (env 1) ()))")
+rep = Rep(SExpr.parse("(a (i 2 (q mul 2 (a 5 (c (sub 2 (q . 1)) 3))) (q mul)))"))
+rep("(a 1 (c (q . 50) 1 ()))")
 
-#rep = Rep(SExpr.parse("(a (i (env 4) (q a (env 5) (c (c (sub (env 4) 1) (mul (env 4) (env 10)) ()) (env 3))) (q env 10)))"))
-#rep("(a (env 1) (c (q 50 1) (env 1) ()))")
+#rep = Rep(SExpr.parse("(a (i 4 (q a 5 (c (c (sub 4 (q . 1)) (mul 4 10) ()) 3)) (q 10)))"))
+#rep("(a 1 (c (q 50 1) 1 ()))")
 
 
 # fibonacci
