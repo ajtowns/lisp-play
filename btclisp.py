@@ -507,8 +507,8 @@ rep("(c (q . 2) (q . 2))")
 
 # factorial
 
-rep = Rep(SExpr.parse("(a (i 2 (q mul 2 (a 5 (c (sub 2 (q . 1)) 3))) (q mul)))"))
-rep("(a 1 (c (q . 150) 1 ()))")
+rep = Rep(SExpr.parse("(a (i 2 (q mul 2 (a 3 (c (sub 2 (q . 1)) 3))) (q mul)))"))
+rep("(a 1 (c (q . 150) 1))")
 
 
 rep = Rep(SExpr.parse("(a (i 4 (q a 3 (c (c (sub 4 (q . 1)) (mul 6 4)) 3)) (q c 6)))"))
