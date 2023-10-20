@@ -382,16 +382,20 @@ def eval(baseenv, inst, debug):
        assert isinstance(args, Element)
        result = None
 
+       # (gen, args) =
+       #   (None, nil) ; what=1 ; "()"
        if args.is_nil():
-           if gen is not None:
+           if gen is None:
+               result = args.bumpref()
+           else:
                result = gen.send(None)
-           else:
-               result = args.bumpref()
+               assert result is not None
        elif args.is_atom():
-           if gen is not None:
-               raise Exception("args terminated with non-list")
-           else:
+           if gen is None:
                result = args.bumpref()
+               assert result is not None
+           else:
+               raise Exception("args terminated with non-list")
        else:
            arg, args = steal_list(args)
 
@@ -399,20 +403,19 @@ def eval(baseenv, inst, debug):
                if arg.is_list():
                    work.append( (what, env, gen, args) )
                    work.append( (1, env.bumpref(), None, arg) )
-                   continue
-
-               opcode = arg.n.decode('utf8')
-               arg.deref()
-               if opcode == "q":
-                   result = args.bumpref()
                else:
-                   o = "op_" + opcode
-                   if not o in globals():
-                       raise Exception("unknown operator: %s" % (o,))
-                   gen = globals()[o]()
-                   gen.send(None)
-                   work.append( (what, env, gen, args) )
-                   continue
+                   opcode = arg.n.decode('utf8')
+                   arg.deref()
+                   if opcode == "q":
+                       result = args.bumpref()
+                       assert result is not None
+                   else:
+                       o = "op_" + opcode
+                       if not o in globals():
+                           raise Exception("unknown operator: %s" % (o,))
+                       gen = globals()[o]()
+                       gen.send(None)
+                       work.append( (what, env, gen, args) )
            else:
                if arg.is_atom():
                    if arg.is_nil():
@@ -425,9 +428,8 @@ def eval(baseenv, inst, debug):
                else:
                    work.append( (what, env, gen, args) )
                    work.append( (2, env.bumpref(), None, arg) )
-               continue
 
-       assert result is not None
+       if result is None: continue
 
        if debug: print(f'  fin --> {result}')
        # tail call (a)
@@ -519,4 +521,20 @@ rep("(a 1 (c (q . 150) (q . 1) 1))")
 
 # fibonacci
 
+# 0 1 1 2 3 5 ...
+# 0 1 2 3 4 5
 
+# fib n = fib n 0 1
+# fib 0 a b = a; fib n a b = fib (n-1) b (a+b)
+# env = (n a b FIB) ; n=2, a=5, b=11, FIB=15
+
+rep = Rep(SExpr.parse("(a (i 2 (q a 15 (c (sub 2 (q . 1)) 11 (add 5 11) 15)) (q c 5)))"))
+rep("(a 1 (c (q . 300) (q . 0) (q . 1) 1))")
+
+
+# notation?
+#   'foo  = (q . foo)
+#   {a b c} = (q a b c)
+#
+# would be nice to have a "compiler" that can deal with a symbol table
+# (for named ops).
