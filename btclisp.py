@@ -123,77 +123,6 @@ class Element:
             raise Exception(f"{fn}: not a number: {self}")
         return int.from_bytes(self.n, byteorder='big', signed=True)
 
-class SExpr:
-    re_parse = re.compile('(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<atom>[^()\s.]+)')
-    re_int = re.compile("^-?\d+$")
-    re_hex = re.compile("^0x[0-9a-fA-F]+$")
-
-    @staticmethod
-    def list_to_element(l):
-        if len(l) >= 3 and l[-2] is None:
-            t = l[-1]
-            l = l[:-2]
-        else:
-            t = Element.nil
-        assert None not in l
-        for h in reversed(l):
-            t = Element(h=h, t=t)
-        return t
-
-    @classmethod
-    def get_token(cls, s):
-        m = cls.re_parse.match(s)
-        if m is None:
-            raise Exception("failed to parse at \"%s\"" % (s,))
-        return s[m.end():], m
-
-    @classmethod
-    def parse(cls, s, many=False):
-        where = 0
-        end = len(s)
-        parstack = [[]]
-
-        while s != "":
-            s, m = cls.get_token(s)
-
-            g = m.groupdict()
-            if g["ws"]:
-                pass
-            elif g["open"]:
-                parstack.append([])
-            elif g["close"]:
-                if len(parstack) <= 1 or (parstack[-1] and parstack[-1][-1] is None):
-                    raise Exception("unexpected )")
-                q = parstack.pop()
-                parstack[-1].append(cls.list_to_element(q))
-            elif g["dot"]:
-                if len(parstack[-1]) == 0:
-                    raise Exception("must have one or more elements before . in list")
-                parstack[-1].append(None)
-            elif g["atom"]:
-                a = g["atom"]
-                if cls.re_hex.match(a):
-                    a = bytes.from_hex(a[2:])
-                elif cls.re_int.match(a):
-                    a = int(a, 10)
-                parstack[-1].append(Element(n=a))
-            else:
-                raise Exception("BUG: unhandled match")
-
-            if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
-                raise Exception("cannot have multiple elements after . in list")
-
-        if len(parstack) > 1:
-            raise Exception("missing )")
-
-        if not many:
-            if len(parstack[0]) > 1:
-                raise Exception("multiple unbracketed entries")
-            return parstack[0][0]
-
-        else:
-            return cls.list_to_element(parstack[0])
-
 class GenArgs:
     def __init__(self):
         self.n = None
@@ -261,7 +190,7 @@ def op_i():
     gargs.assert_end(err="i: too many arguments")
     yield result
 
-def op_f():
+def op_h():
     gargs = GenArgs()
     yield from gargs.check() # start!
     l = yield from gargs.get_arg(err="f: must provide list argument")
@@ -272,7 +201,7 @@ def op_f():
     l.deref()
     yield h
 
-def op_r():
+def op_t():
     gargs = GenArgs()
     yield from gargs.check() # start!
     l = yield from gargs.get_arg(err="r: must provide list argument")
@@ -348,6 +277,165 @@ def op_div():
         yield from gargs.check()
     yield Element(n=i)
 
+FUNCS = [
+  (0x00, "q", None), # quoting indicator, special
+
+  (0x01, "a", op_a),  # apply
+  (0x02, "x", op_x),  # exception
+  (0x03, "i", op_i),  # eager-evaluated if
+#  (0x04, "sf", op_softfork),
+
+  (0x05, "c", op_c), # construct a list
+  (0x06, "h", op_h), # head / car
+  (0x07, "t", op_t), # tail / cdr
+#  (0x08, "l", op_l), # is cons or nil?
+
+#  (0x09, "not", op_none),
+#  (0x0a, "all", op_all),
+#  (0x0b, "any", op_any),
+
+#  (0x0c, "=", op_eq),
+# (0x0d, "<s", op_str_lt),
+# (0x0e, "len", op_length),
+# (0x0f, "sub", op_substr),
+# (0x10, "cat", op_cat),
+
+#  (0x11, "~",op_bit_not),
+#  (0x12, "&", op_bit_and),
+#  (0x13, "|", op_bit_or),
+#  (0x14, "^", op_bit_xor),
+#  (0x15, "b<<", op_bit_lshift),
+#  (0x16, "b>>", op_bit_rshift),
+
+  (0x17, "+", op_add),
+  (0x18, "-", op_sub),
+  (0x19, "*", op_mul),
+  (0x1a, "/", op_div),
+#  (0x17, "+", op_add_u64),
+#  (0x18, "-", op_sub_u64),
+#  (0x19, "*", op_mul_u64),
+#  (0x1a, "%", op_mod_u64),
+#  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))
+#  (0x1c, "<", op_lt_u64),
+#  (0x1d, "<<", op_lshift_u64),
+#  (0x1e, ">>", op_rshift_u64),
+#  (0x1f, "log2e42", op_log2e42_u64),
+
+#  (0x20, "bn+", op_add_bn),
+#  (0x21, "bn-", op_sub_bn),
+#  (0x22, "bn*", op_mul_bn),
+#  (0x23, "bn%", op_mod_bn),
+#  (0x24, "bn/%", op_divmod_bn), # (/ a b) => (h (/% a b))
+#  (0x25, "bn<", op_lt_bn),
+#  (0x26, "bn<<", op_lshift_bn),
+#  (0x27, "bn>>", op_rshift_bn),
+#  (0x28, "bnlog2e42", op_log2e42_bn),
+
+#  (0x29, "rd_csn", op_csn_read),
+#  (0x2a, "wr_csn", op_csn_write),
+#  (0x2b, "rd_list", op_list_read),
+#  (0x2c, "wr_list", op_list_write),
+
+#  (0x2d, "sha256", op_sha256),
+#  (0x2e, "ripemd160", op_ripemd160),
+#  (0x2f, "hash160", op_hash160),
+#  (0x30, "hash256", op_hash256),
+#  (0x31, "bip340_verify", op_bip340_verify),
+#  (0x32, "ecdsa_verify", op_ecdsa_verify),
+#  (0x33, "secp256k1_muladd", op_secp256k1_muladd),
+
+#  (0x34, "tx", op_tx),
+#  (0x35, "bip341_tx", op_bip341_tx),
+#  (0x36, "bip342_txmsg", op_bip342_txmsg),
+#  (0x37, "bip345_vault", op_bip345_vault),
+]
+
+def _Do_FUNCS():
+    se = {}
+    op = {}
+    for (val, name, fn) in FUNCS:
+        assert name not in se
+        assert val not in op
+        se[name] = val
+        op[val] = fn
+    return se, op
+SExpr_FUNCS, Op_FUNCS = _Do_FUNCS()
+
+class SExpr:
+    re_parse = re.compile('(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<atom>[^()\s.]+)')
+    re_int = re.compile("^-?\d+$")
+    re_hex = re.compile("^0x[0-9a-fA-F]+$")
+
+    @staticmethod
+    def list_to_element(l):
+        if len(l) >= 3 and l[-2] is None:
+            t = l[-1]
+            l = l[:-2]
+        else:
+            t = Element.nil
+        assert None not in l
+        for h in reversed(l):
+            t = Element(h=h, t=t)
+        return t
+
+    @classmethod
+    def get_token(cls, s):
+        m = cls.re_parse.match(s)
+        if m is None:
+            raise Exception("failed to parse at \"%s\"" % (s,))
+        return s[m.end():], m
+
+    @classmethod
+    def parse(cls, s, many=False):
+        where = 0
+        end = len(s)
+        parstack = [[]]
+
+        while s != "":
+            s, m = cls.get_token(s)
+
+            g = m.groupdict()
+            if g["ws"]:
+                pass
+            elif g["open"]:
+                parstack.append([])
+            elif g["close"]:
+                if len(parstack) <= 1 or (parstack[-1] and parstack[-1][-1] is None):
+                    raise Exception("unexpected )")
+                q = parstack.pop()
+                parstack[-1].append(cls.list_to_element(q))
+            elif g["dot"]:
+                if len(parstack[-1]) == 0:
+                    raise Exception("must have one or more elements before . in list")
+                parstack[-1].append(None)
+            elif g["atom"]:
+                a = g["atom"]
+                if a in SExpr_FUNCS:
+                    a = SExpr_FUNCS[a]
+                elif a == "nil":
+                    a = 0
+                elif cls.re_hex.match(a):
+                    a = bytes.from_hex(a[2:])
+                elif cls.re_int.match(a):
+                    a = int(a, 10)
+                parstack[-1].append(Element(n=a))
+            else:
+                raise Exception("BUG: unhandled match")
+
+            if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
+                raise Exception("cannot have multiple elements after . in list")
+
+        if len(parstack) > 1:
+            raise Exception("missing )")
+
+        if not many:
+            if len(parstack[0]) > 1:
+                raise Exception("multiple unbracketed entries")
+            return parstack[0][0]
+
+        else:
+            return cls.list_to_element(parstack[0])
+
 def steal_list(l):
     assert isinstance(l, Element) and l.is_list()
     h, t = l.h.bumpref(), l.t.bumpref()
@@ -404,16 +492,16 @@ def eval(baseenv, inst, debug):
                    work.append( (what, env, gen, args) )
                    work.append( (1, env.bumpref(), None, arg) )
                else:
-                   opcode = arg.n.decode('utf8')
+                   opcode = arg.as_int("op")
                    arg.deref()
-                   if opcode == "q":
+                   o = Op_FUNCS.get(opcode, -1)
+                   if o == -1:
+                       raise Exception("unknown operator: %s" % (opcode,))
+                   elif o is None:
                        result = args.bumpref()
                        assert result is not None
                    else:
-                       o = "op_" + opcode
-                       if not o in globals():
-                           raise Exception("unknown operator: %s" % (o,))
-                       gen = globals()[o]()
+                       gen = o()
                        gen.send(None)
                        work.append( (what, env, gen, args) )
            else:
@@ -492,30 +580,30 @@ rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
 print("Env: %s" % (rep.env))
 rep("1")
 rep("(q . 1)")
-rep("(add (q . 2) (q . 2) . 0)")
-rep("(add (q . 2) (q . 2))")
-rep("(a (q add (q . 2) (q . 2)))")
+rep("(+ (q . 2) (q . 2) . 0)")
+rep("(+ (q . 2) (q . 2))")
+rep("(a (q + (q . 2) (q . 2)))")
 rep("(c 1 ())")
 rep("(c 4 ())")
 rep("(c 4 6 5 7 0)")
-rep("(sub (q . 77) (mul (q . 3) (div (q . 77) (q . 3))))")
+rep("(- (q . 77) (* (q . 3) (/ (q . 77) (q . 3))))")
 rep("(c (q . 1) (q . 2) (q . 3) (q . 4) (c (q . 5) (q 6 7)))")
-rep("(f (q 4))")
-rep("(add 7 (q . 3))")
-rep("(a (q add 7 (q . 3)))")
-rep("(a (q add 7 (q . 3)) 1)")
-rep("(a (q add 7 (q . 3)) (c (q 1 . 2) 3))")
-rep("(a (q add 7 (q . 3)) (q (1 . 2) . (3 . 4)))")
-rep("(add (q . 2) (q . 2))")
+rep("(h (q 4))")
+rep("(+ 7 (q . 3))")
+rep("(a (q + 7 (q . 3)))")
+rep("(a (q + 7 (q . 3)) 1)")
+rep("(a (q + 7 (q . 3)) (c (q 1 . 2) 3))")
+rep("(a (q + 7 (q . 3)) (q (1 . 2) . (3 . 4)))")
+rep("(+ (q . 2) (q . 2))")
 rep("(c (q . 2) (q . 2))")
 
 # factorial
 
-rep = Rep(SExpr.parse("(a (i 2 (q mul 2 (a 3 (c (sub 2 (q . 1)) 3))) (q . 1)))"))
+rep = Rep(SExpr.parse("(a (i 2 (q * 2 (a 3 (c (- 2 (q . 1)) 3))) (q . 1)))"))
 rep("(a 1 (c (q . 150) 1))")
 
 
-rep = Rep(SExpr.parse("(a (i 2 (q a 7 (c (sub 2 (q . 1)) (mul 5 2) 7)) (q c 5)))"))
+rep = Rep(SExpr.parse("(a (i 2 (q a 7 (c (- 2 (q . 1)) (* 5 2) 7)) (q c 5)))"))
 rep("(a 1 (c (q . 150) (q . 1) 1))")
 # 4 = arg 6 = acc 3 = factorial
 
@@ -528,13 +616,17 @@ rep("(a 1 (c (q . 150) (q . 1) 1))")
 # fib 0 a b = a; fib n a b = fib (n-1) b (a+b)
 # env = (n a b FIB) ; n=2, a=5, b=11, FIB=15
 
-rep = Rep(SExpr.parse("(a (i 2 (q a 15 (c (sub 2 (q . 1)) 11 (add 5 11) 15)) (q c 5)))"))
+rep = Rep(SExpr.parse("(a (i 2 (q a 15 (c (- 2 (q . 1)) 11 (+ 5 11) 15)) (q c 5)))"))
 rep("(a 1 (c (q . 300) (q . 0) (q . 1) 1))")
 
+# levels:
+#   bytes/hex
+#   (c (q . 1) (q . 0xCAFEBABE) (q . "hello, world") (q . nil))
+#   let/defun, ',`
 
 # notation?
 #   'foo  = (q . foo)
-#   {a b c} = (q a b c)
+#   '(a b c) = (q a b c)
 #
 # would be nice to have a "compiler" that can deal with a symbol table
 # (for named ops).
