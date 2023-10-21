@@ -3,16 +3,26 @@
 import re
 
 class Allocator:
+    """simple object to monitor how much space is used up by
+       currently allocated objects"""
     def __init__(self):
         self.x = 0
         self.max = 0
         self.alloced = set()
+        self.limit = 500000
+
+    def over_limit(self):
+        return self.max > self.limit
+
     def alloc(self, n, w):
+        assert n >= 0
         self.x += n
         if self.x > self.max:
             self.max = self.x
         self.alloced.add(w)
+
     def free(self, n, w):
+        assert n >= 0
         self.x -= n
         self.alloced.remove(w)
 
@@ -91,14 +101,14 @@ class Element:
 
     def __str__(self):
         if self.is_nil():
-            return "()"
+            return "nil"
         elif self.is_atom():
             if self.re_printable.match(self.n):
-                return self.n.decode('utf8')
+                return '"%s"' % (self.n.decode('utf8'),)
             elif len(self.n) == 1:
                 return str(self.as_int(None))
             else:
-                return self.n.hex()
+                return "0x%s" % (self.n.hex(),)
         else:
             x = []
             while self.t.is_list():
@@ -213,6 +223,10 @@ def op_t():
     yield t
 
 def op_c():
+    # (c head tail), (c h1 h2 h3 tail)
+    # (c '1 '2 '3) = '(1 2 . 3)
+    # this may mean you often want to have "nil" as the last arg,
+    # if you're constructing a list from scratch
     gargs = GenArgs()
     yield from gargs.check() # start!
     res = None
@@ -278,17 +292,17 @@ def op_div():
     yield Element(n=i)
 
 FUNCS = [
-  (0x00, "q", None), # quoting indicator, special
+  (b'', "q", None), # quoting indicator, special
 
   (0x01, "a", op_a),  # apply
   (0x02, "x", op_x),  # exception
   (0x03, "i", op_i),  # eager-evaluated if
 #  (0x04, "sf", op_softfork),
 
-  (0x05, "c", op_c), # construct a list
+  (0x05, "c", op_c), # construct a list, last element is a list
   (0x06, "h", op_h), # head / car
   (0x07, "t", op_t), # tail / cdr
-#  (0x08, "l", op_l), # is cons or nil?
+#  (0x08, "l", op_l), # is cons?
 
 #  (0x09, "not", op_none),
 #  (0x0a, "all", op_all),
@@ -365,6 +379,7 @@ class SExpr:
     re_parse = re.compile('(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<atom>[^()\s.]+)')
     re_int = re.compile("^-?\d+$")
     re_hex = re.compile("^0x[0-9a-fA-F]+$")
+    re_quote = re.compile('^"[^"]*"$')
 
     @staticmethod
     def list_to_element(l):
@@ -418,6 +433,10 @@ class SExpr:
                     a = bytes.from_hex(a[2:])
                 elif cls.re_int.match(a):
                     a = int(a, 10)
+                elif cls.re_quote.match(a):
+                    a = a[1:-1]
+                else:
+                    raise Exception("unparsable/unknown atom %r" % (a,))
                 parstack[-1].append(Element(n=a))
             else:
                 raise Exception("BUG: unhandled match")
@@ -459,6 +478,9 @@ def eval(baseenv, inst, debug):
    work = [(0, baseenv.bumpref(), None, inst.bumpref())] # stage, env, generator, remaining args to evaluate
 
    while work:
+       if ALLOCATOR.over_limit():
+           raise Exception("used too much memory")
+
        (what, env, gen, args) = work.pop()
 
        if debug:
@@ -470,8 +492,6 @@ def eval(baseenv, inst, debug):
        assert isinstance(args, Element)
        result = None
 
-       # (gen, args) =
-       #   (None, nil) ; what=1 ; "()"
        if args.is_nil():
            if gen is None:
                result = args.bumpref()
@@ -492,15 +512,16 @@ def eval(baseenv, inst, debug):
                    work.append( (what, env, gen, args) )
                    work.append( (1, env.bumpref(), None, arg) )
                else:
-                   opcode = arg.as_int("op")
+                   opcode = arg.n
                    arg.deref()
-                   o = Op_FUNCS.get(opcode, -1)
-                   if o == -1:
-                       raise Exception("unknown operator: %s" % (opcode,))
-                   elif o is None:
+                   if len(opcode) == 0:
+                       # nil / q
                        result = args.bumpref()
                        assert result is not None
                    else:
+                       o = Op_FUNCS.get(opcode[0], None) if len(opcode) == 1 else None
+                       if o is None:
+                           raise Exception("unknown operator: %s" % (opcode.hex(),))
                        gen = o()
                        gen.send(None)
                        work.append( (what, env, gen, args) )
@@ -573,19 +594,21 @@ class Rep:
             r.deref()
         except:
             print("%s -> FAILED" % (program,))
-            raise
+            raise ## need some proper way of freeing memory
         p.deref()
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
 print("Env: %s" % (rep.env))
 rep("1")
 rep("(q . 1)")
+rep("(q . q)")
+rep("(q . \"q\")")
 rep("(+ (q . 2) (q . 2) . 0)")
 rep("(+ (q . 2) (q . 2))")
 rep("(a (q + (q . 2) (q . 2)))")
 rep("(c 1 ())")
 rep("(c 4 ())")
-rep("(c 4 6 5 7 0)")
+rep("(c 4 6 5 7 nil)")
 rep("(- (q . 77) (* (q . 3) (/ (q . 77) (q . 3))))")
 rep("(c (q . 1) (q . 2) (q . 3) (q . 4) (c (q . 5) (q 6 7)))")
 rep("(h (q 4))")
@@ -601,10 +624,12 @@ rep("(c (q . 2) (q . 2))")
 
 rep = Rep(SExpr.parse("(a (i 2 (q * 2 (a 3 (c (- 2 (q . 1)) 3))) (q . 1)))"))
 rep("(a 1 (c (q . 150) 1))")
+rep("(a 1 (c (q . 15000) 1))")
 
 
 rep = Rep(SExpr.parse("(a (i 2 (q a 7 (c (- 2 (q . 1)) (* 5 2) 7)) (q c 5)))"))
 rep("(a 1 (c (q . 150) (q . 1) 1))")
+rep("(a 1 (c (q . 15000) (q . 1) 1))")
 # 4 = arg 6 = acc 3 = factorial
 
 # fibonacci
@@ -622,11 +647,13 @@ rep("(a 1 (c (q . 300) (q . 0) (q . 1) 1))")
 # levels:
 #   bytes/hex
 #   (c (q . 1) (q . 0xCAFEBABE) (q . "hello, world") (q . nil))
-#   let/defun, ',`
+#   let/defun \'
+#   \` and \,  (quote and unquote)
 
 # notation?
 #   'foo  = (q . foo)
 #   '(a b c) = (q a b c)
+#   `(a ,b c) = (c (q . a) b (q . c) nil)
 #
 # would be nice to have a "compiler" that can deal with a symbol table
 # (for named ops).
