@@ -133,183 +133,200 @@ class Element:
             raise Exception(f"{fn}: not a number: {self}")
         return int.from_bytes(self.n, byteorder='big', signed=True)
 
-class GenArgs:
+class Operator:
+    state = 0
     def __init__(self):
-        self.n = None
+        # do any special setup
+        pass
 
-    def check(self):
-        self.n = yield None
+    def argument(self, el):
+        # handle an argument
+        raise Exception("BUG: argument handling unimplemented")
 
-    def get_arg(self, err):
-        a = self.n
-        if a is not None:
-            self.n = yield None
-        elif err is not None:
-            raise Exception(err)
-        return a
+    def finish(self):
+        # return the result
+        raise Exception("BUG: finish unimplemented")
 
-    def assert_end(self, err):
-        if self.n is not None:
-            raise Exception(err)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self.n is None:
-            raise StopIteration
-        n = self.n
-        self.n = None
-        return n
-
-def op_a():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    i = yield from gargs.get_arg(err="a: requires at least one argument")
-    env = yield from gargs.get_arg(err=None)
-    gargs.assert_end(err="a: too many arguments")
-    yield [env, i]
-
-def op_x():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    x = []
-    for i in gargs:
-        x.append(repr(i))
-        i.deref()
-        yield from gargs.check()
-    if x == []:
-        x = ["x: explicit exception"]
-    raise Exception(" ".join(x))
-
-def op_i():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    c = yield from gargs.get_arg(err="i: must provide condition argument")
-    branch = False if c.is_nil() else True
-    c.deref()
-    t = yield from gargs.get_arg(err="i: must provide then argument")
-    result = t.bumpref() if not t.is_nil() else Element.nil
-    t.deref()
-    f = yield from gargs.get_arg(err=None)
-    if f is not None:
-        if not branch:
-            result = f
+class op_a(Operator):
+    def argument(self, el):
+        if self.state == 0:
+            self.i = el
+            self.env = None
+        elif self.state == 1:
+            self.env = el
         else:
-            f.deref()
-    gargs.assert_end(err="i: too many arguments")
-    yield result
+            raise Exception("a: too many arguments")
+        self.state += 1
+    def finish(self):
+        if self.state == 0:
+            raise Exception("a: requires at least one argument")
+        return [self.env, self.i]
 
-def op_h():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    l = yield from gargs.get_arg(err="f: must provide list argument")
-    if l.is_atom():
-        raise Exception("f: received non-list argument %s" % (l,))
-    gargs.assert_end(err="f: too many arguments")
-    h = l.h.bumpref()
-    l.deref()
-    yield h
+class op_x(Operator):
+    def __init__(self):
+        self.x = []
+    def argument(self, el):
+        self.x.append(repr(i))
+        el.deref()
+    def finish(self):
+        raise Exception(" ".join(self.x))
 
-def op_t():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    l = yield from gargs.get_arg(err="r: must provide list argument")
-    if l.is_atom():
-        raise Exception("r: received non-list argument %s" % (l,))
-    gargs.assert_end(err="r: too many arguments")
-    t = l.t.bumpref()
-    l.deref()
-    yield t
+class op_i(Operator):
+    def argument(self, el):
+        if self.state == 0:
+            self.then = not el.is_nil()
+            el.deref()
+        elif self.state == 1:
+            if self.then:
+                self.result = el
+            else:
+                self.result = Element.nil
+                el.deref()
+        elif self.state == 2:
+            if not self.then:
+                self.result.deref()
+                self.result = el
+            else:
+                el.deref()
+        else:
+            raise Exception("i: too many arguments")
+        self.state += 1
+    def finish(self):
+        if self.state == 0:
+            raise Exception("i: must provide condition argument")
+        if self.state == 1:
+            raise Exception("i: must provide then argument")
+        return self.result
 
-def op_l():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    l = yield from gargs.get_arg(err="l: must provide list argument")
-    gargs.assert_end(err="l: too many arguments")
-    if l.is_nil() or l.is_atom():
-        result = Element.nil
-    else:
-        result = Element(n=1)
-    l.deref()
-    yield result
+class op_h(Operator):
+    def argument(self, el):
+        if self.state > 0:
+            raise Exception("h: too many arguments")
+        if el.is_atom():
+            raise Exception("h: received non-list argument %s" % (el,))
+        self.r = el.h.bumpref()
+        el.deref()
+        self.state += 1
 
-def op_c():
+    def finish(self):
+        if self.state == 0:
+            raise Exception("h: must provide list argument")
+        return self.r
+
+class op_t(Operator):
+    def argument(self, el):
+        if self.state > 0:
+            raise Exception("t: too many arguments")
+        if el.is_atom():
+            raise Exception("t: received non-list argument %s" % (el,))
+        self.r = el.t.bumpref()
+        el.deref()
+        self.state += 1
+
+    def finish(self):
+        if self.state == 0:
+            raise Exception("t: must provide list argument")
+        return self.r
+
+class op_l(Operator):
+    def argument(self, el):
+        if self.state > 0:
+            raise Exception("l: too many arguments")
+        self.r = el.is_list()
+        el.deref()
+        self.state += 1
+
+    def finish(self):
+        if self.state == 0:
+            raise Exception("l: must provide list argument")
+        if self.r:
+            return Element(n=1)
+        else:
+            return Element.nil
+
+class op_c(Operator):
     # (c head tail), (c h1 h2 h3 tail)
-    # (c '1 '2 '3) = '(1 2 . 3)
     # this may mean you often want to have "nil" as the last arg,
     # if you're constructing a list from scratch
-    gargs = GenArgs()
-    yield from gargs.check() # start!
+
     res = None
     last_cons = None
-    for i in gargs:
-        if res is None:
-            res = i
-        elif last_cons is None:
-            res = last_cons = Element(h=res, t=i)
+
+    def argument(self, el):
+        if self.res is None:
+            self.res = el
+        elif self.last_cons is None:
+            self.res = self.last_cons = Element(h=self.res, t=el)
         else:
-            last_cons.t = Element(h=last_cons.t, t=i)
-            last_cons = last_cons.t
-        yield from gargs.check()
+            self.last_cons.t = Element(h=self.last_cons.t, t=el)
+            self.last_cons = self.last_cons.t
 
-    if res is None:
-        res = Element.nil
-    e = res if last_cons is None else last_cons.t
+    def finish(self):
+        if self.res is None:
+            return Element.nil
+        return self.res
 
-    yield res
+class op_add(Operator):
+    def __init__(self):
+        self.i = 0
 
-def op_add():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    i = 0
-    for k in gargs:
-        i += k.as_int("add")
-        k.deref()
-        yield from gargs.check()
-    yield Element(n=i)
+    def argument(self, el):
+        self.i += el.as_int("add")
+        el.deref()
 
-def op_mul():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    i = 1
-    for k in gargs:
-        i *= k.as_int("mul")
-        k.deref()
-        yield from gargs.check()
-    yield Element(n=i)
+    def finish(self):
+        return Element(n=self.i)
 
-def op_sub():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    k = yield from gargs.get_arg(err="sub: missing arguments")
-    i = k.as_int("sub")
-    k.deref()
-    for k in gargs:
-        i -= k.as_int("sub")
-        k.deref()
-        yield from gargs.check()
-    yield Element(n=i)
+class op_mul(Operator):
+    def __init__(self):
+        self.i = 1
 
-def op_div():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    k = yield from gargs.get_arg(err="div: missing arguments")
-    i = k.as_int("div")
-    k.deref()
-    for k in gargs:
-        i -= k.as_int("div")
-        k.deref()
-        yield from gargs.check()
-    yield Element(n=i)
+    def argument(self, el):
+        self.i *= el.as_int("mul")
+        el.deref()
 
-def op_softfork():
-    gargs = GenArgs()
-    yield from gargs.check() # start!
-    for k in gargs:
-        k.deref()
-        yield from gargs.check()
-    yield Element(n=1)
+    def finish(self):
+        return Element(n=self.i)
+
+class op_sub(Operator):
+    def __init__(self):
+        self.i = None
+
+    def argument(self, el):
+        n = el.as_int("sub")
+        el.deref()
+        if self.i is None:
+            self.i = n
+        else:
+            self.i -= n
+
+    def finish(self):
+        if self.i is None:
+            raise Exception("sub: missing arguments")
+        return Element(n=self.i)
+
+class op_div(Operator):
+    def __init__(self):
+        self.i = None
+
+    def argument(self, el):
+        n = el.as_int("div")
+        el.deref()
+        if self.i is None:
+            self.i = n
+        else:
+            self.i //= n
+
+    def finish(self):
+        if self.i is None:
+            raise Exception("div: missing arguments")
+        return Element(n=self.i)
+
+class op_softfork(Operator):
+    def argument(self, el):
+        el.deref()
+    def finish(self):
+        return Element(n=1)
 
 FUNCS = [
   (b'', "q", None), # quoting indicator, special
@@ -396,7 +413,7 @@ def _Do_FUNCS():
 SExpr_FUNCS, Op_FUNCS = _Do_FUNCS()
 
 class SExpr:
-    re_parse = re.compile('(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<atom>[^()\s.]+)')
+    re_parse = re.compile("(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<tick>['])|(?P<atom>[^'()\s.]+)")
     re_int = re.compile("^-?\d+$")
     re_hex = re.compile("^0x[0-9a-fA-F]+$")
     re_quote = re.compile('^"[^"]*"$')
@@ -435,7 +452,7 @@ class SExpr:
             elif g["open"]:
                 parstack.append([])
             elif g["close"]:
-                if len(parstack) <= 1 or (parstack[-1] and parstack[-1][-1] is None):
+                if len(parstack) <= 1 or (parstack[-1] and parstack[-1][-1] is None) or (parstack[-1] and parstack[-1][0] == "tick"):
                     raise Exception("unexpected )")
                 q = parstack.pop()
                 parstack[-1].append(cls.list_to_element(q))
@@ -443,6 +460,8 @@ class SExpr:
                 if len(parstack[-1]) == 0:
                     raise Exception("must have one or more elements before . in list")
                 parstack[-1].append(None)
+            elif g["tick"]:
+                parstack.append(["tick"])
             elif g["atom"]:
                 a = g["atom"]
                 if a in SExpr_FUNCS:
@@ -461,8 +480,16 @@ class SExpr:
             else:
                 raise Exception("BUG: unhandled match")
 
+            while len(parstack[-1]) > 1 and parstack[-1][0] == "tick":
+                assert len(parstack[-1]) == 2
+                q = parstack.pop()
+                parstack[-1].append(Element(h=Element.nil, t=q[1]))
+
             if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
                 raise Exception("cannot have multiple elements after . in list")
+
+        if parstack and parstack[-1] and parstack[-1][0] == "tick":
+            raise Exception("tick without following element")
 
         if len(parstack) > 1:
             raise Exception("missing )")
@@ -516,7 +543,7 @@ def eval(baseenv, inst, debug):
            if gen is None:
                result = args.bumpref()
            else:
-               result = gen.send(None)
+               result = gen.finish()
                assert result is not None
        elif args.is_atom():
            if gen is None:
@@ -543,16 +570,15 @@ def eval(baseenv, inst, debug):
                        if o is None:
                            raise Exception("unknown operator: %s" % (opcode.hex(),))
                        gen = o()
-                       gen.send(None)
                        work.append( (what, env, gen, args) )
            else:
                if arg.is_atom():
                    if arg.is_nil():
-                       gen.send(arg)
+                       gen.argument(arg)
                    else:
                        n = arg.as_int("env")
                        arg.deref()
-                       gen.send(get_env(n, env).bumpref())
+                       gen.argument(get_env(n, env).bumpref())
                    work.append( (what, env, gen, args) )
                else:
                    work.append( (what, env, gen, args) )
@@ -593,7 +619,7 @@ def eval(baseenv, inst, debug):
        elif what == 2:
            # recursion to resolve argument
            assert work[-1][2] is not None
-           work[-1][2].send(result)
+           work[-1][2].argument(result)
            continue
 
        assert False, "BUG: unreachable"
@@ -631,36 +657,37 @@ print("Env: %s" % (rep.env))
 rep("1")
 rep("(q . 1)")
 rep("(q . q)")
-rep("(q . \"q\")")
-rep("(+ (q . 2) (q . 2) . 0)")
-rep("(+ (q . 2) (q . 2))")
-rep("(a (q + (q . 2) (q . 2)))")
+rep("'1")
+rep("'(1)")
+rep("'\"q\"")
+rep("(+ '2 '2 . 0)")
+rep("(+ (q . 2) '2)")
+rep("(a '(+ '2 '2))")
+rep("(h '(4 5 6))")
+rep("(t '(4 5 6))")
+rep("(+ 7 '3)")
+rep("(a '(+ 7 '3))")
+rep("(a '(+ 7 '3) 1)")
+rep("(a '(+ 7 '3) '((1 . 2) . (3 . 4)))")
 rep("(c 1 ())")
 rep("(c 4 ())")
 rep("(c 4 6 5 7 nil)")
-rep("(- (q . 77) (* (q . 3) (/ (q . 77) (q . 3))))")
-rep("(c (q . 1) (q . 2) (q . 3) (q . 4) (c (q . 5) (q 6 7)))")
-rep("(h (q 4))")
-rep("(+ 7 (q . 3))")
-rep("(a (q + 7 (q . 3)))")
-rep("(a (q + 7 (q . 3)) 1)")
+rep("(- '77 (* '3 (/ '77 '3)))")
+rep("(c '1 '2 '3 '4 (c '5 '(6 7)))")
 rep("(a (q + 7 (q . 3)) (c (q 1 . 2) 3))")
-rep("(a (q + 7 (q . 3)) (q (1 . 2) . (3 . 4)))")
-rep("(+ (q . 2) (q . 2))")
 rep("(c (q . 2) (q . 2))")
 rep("(c (q . 2) (sf 1 2 3 4 5))")
 rep("(c (l ()) (l (q . 1)) (l (q 1 2 3)) ())")
+
 # factorial
+rep = Rep(SExpr.parse("(a (i 2 '(* 2 (a 3 (c (- 2 '1) 3))) '1))"))
+rep("(a 1 (c '150 1))")
+#rep("(a 1 (c '15000 1))")
 
-rep = Rep(SExpr.parse("(a (i 2 (q * 2 (a 3 (c (- 2 (q . 1)) 3))) (q . 1)))"))
-rep("(a 1 (c (q . 150) 1))")
-rep("(a 1 (c (q . 15000) 1))")
-
-
-rep = Rep(SExpr.parse("(a (i 2 (q a 7 (c (- 2 (q . 1)) (* 5 2) 7)) (q c 5)))"))
-rep("(a 1 (c (q . 150) (q . 1) 1))")
-rep("(a 1 (c (q . 15000) (q . 1) 1))")
-# 4 = arg 6 = acc 3 = factorial
+# factorial but efficient
+rep = Rep(SExpr.parse("(a (i 2 '(a 7 (c (- 2 '1) (* 5 2) 7)) (q c 5)))"))
+rep("(a 1 (c '150 '1 1))")
+#rep("(a 1 (c '15000 '1 1))")
 
 # fibonacci
 
