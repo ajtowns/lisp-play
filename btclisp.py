@@ -291,13 +291,21 @@ def op_div():
         yield from gargs.check()
     yield Element(n=i)
 
+def op_softfork():
+    gargs = GenArgs()
+    yield from gargs.check() # start!
+    for k in gargs:
+        k.deref()
+        yield from gargs.check()
+    yield Element(n=1)
+
 FUNCS = [
   (b'', "q", None), # quoting indicator, special
 
   (0x01, "a", op_a),  # apply
   (0x02, "x", op_x),  # exception
   (0x03, "i", op_i),  # eager-evaluated if
-#  (0x04, "sf", op_softfork),
+  (0x04, "sf", op_softfork),
 
   (0x05, "c", op_c), # construct a list, last element is a list
   (0x06, "h", op_h), # head / car
@@ -619,6 +627,7 @@ rep("(a (q + 7 (q . 3)) (c (q 1 . 2) 3))")
 rep("(a (q + 7 (q . 3)) (q (1 . 2) . (3 . 4)))")
 rep("(+ (q . 2) (q . 2))")
 rep("(c (q . 2) (q . 2))")
+rep("(c (q . 2) (sf 1 2 3 4 5))")
 
 # factorial
 
