@@ -222,6 +222,18 @@ def op_t():
     l.deref()
     yield t
 
+def op_l():
+    gargs = GenArgs()
+    yield from gargs.check() # start!
+    l = yield from gargs.get_arg(err="l: must provide list argument")
+    gargs.assert_end(err="l: too many arguments")
+    if l.is_nil() or l.is_atom():
+        result = Element.nil
+    else:
+        result = Element(n=1)
+    l.deref()
+    yield result
+
 def op_c():
     # (c head tail), (c h1 h2 h3 tail)
     # (c '1 '2 '3) = '(1 2 . 3)
@@ -310,7 +322,7 @@ FUNCS = [
   (0x05, "c", op_c), # construct a list, last element is a list
   (0x06, "h", op_h), # head / car
   (0x07, "t", op_t), # tail / cdr
-#  (0x08, "l", op_l), # is cons?
+  (0x08, "l", op_l), # is cons?
 
 #  (0x09, "not", op_none),
 #  (0x0a, "all", op_all),
@@ -602,7 +614,16 @@ class Rep:
             r.deref()
         except:
             print("%s -> FAILED" % (program,))
-            raise ## need some proper way of freeing memory
+            raise
+            ## need some proper way of freeing memory so that REPL can
+            ## continue after a failure. difficult because we don't want
+            ## to free the original environment, but do want to free
+            ## everything else
+            ##
+            ## perhaps should restructure to set a flag in ALLOCATOR
+            ## or similar for normal execution failures, and only raise
+            ## for BUG scenarios? need to count "execution load" somewhere
+            ## as well
         p.deref()
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
@@ -628,7 +649,7 @@ rep("(a (q + 7 (q . 3)) (q (1 . 2) . (3 . 4)))")
 rep("(+ (q . 2) (q . 2))")
 rep("(c (q . 2) (q . 2))")
 rep("(c (q . 2) (sf 1 2 3 4 5))")
-
+rep("(c (l ()) (l (q . 1)) (l (q 1 2 3)) ())")
 # factorial
 
 rep = Rep(SExpr.parse("(a (i 2 (q * 2 (a 3 (c (- 2 (q . 1)) 3))) (q . 1)))"))
@@ -656,8 +677,9 @@ rep("(a 1 (c (q . 300) (q . 0) (q . 1) 1))")
 # levels:
 #   bytes/hex
 #   (c (q . 1) (q . 0xCAFEBABE) (q . "hello, world") (q . nil))
-#   let/defun \'
-#   \` and \,  (quote and unquote)
+#   \' and aliases? (car,head = h, etc)
+#   symbols; let/defun (compile to env access)
+#   \` and \,  (quote and unquote / macros)
 
 # notation?
 #   'foo  = (q . foo)
