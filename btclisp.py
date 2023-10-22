@@ -147,20 +147,44 @@ class Operator:
         # return the result
         raise Exception("BUG: finish unimplemented")
 
+def build_tree(tree, element):
+    i = 0
+    while i < len(tree):
+        if tree[i] is None:
+            tree[i] = element
+            return
+        element = Element(h=tree[i], t=element)
+        tree[i] = None
+        i += 1
+    tree.append(element)
+
+def resolve_tree(tree):
+    x = None
+    for el in tree:
+        if el is None: continue
+        if x is None:
+             x = el
+        else:
+             x = Element(h=el, t=x)
+    return x
+
 class op_a(Operator):
+    # if given multiple arguments, builds them up into a tree,
+    # biased to the left
+    def __init__(self):
+        self.tree = []
     def argument(self, el):
         if self.state == 0:
             self.i = el
             self.env = None
-        elif self.state == 1:
-            self.env = el
+            self.state = 1
         else:
-            raise Exception("a: too many arguments")
-        self.state += 1
+            build_tree(self.tree, el)
     def finish(self):
         if self.state == 0:
             raise Exception("a: requires at least one argument")
-        return [self.env, self.i]
+        env = resolve_tree(self.tree)
+        return [env, self.i]
 
 class op_x(Operator):
     def __init__(self):
@@ -476,7 +500,10 @@ class SExpr:
                     a = a[1:-1]
                 else:
                     raise Exception("unparsable/unknown atom %r" % (a,))
-                parstack[-1].append(Element(n=a))
+                if a == b'' or a == 0:
+                    parstack[-1].append(Element.nil)
+                else:
+                    parstack[-1].append(Element(n=a))
             else:
                 raise Exception("BUG: unhandled match")
 
@@ -633,6 +660,7 @@ class Rep:
     def __call__(self, program, debug=None):
         if debug is None: debug = self.debug
         ALLOCATOR.max = 0
+        init_x = ALLOCATOR.x
         p = SExpr.parse(program, many=False)
         try:
             r = eval(self.env, p, debug=debug)
@@ -651,6 +679,9 @@ class Rep:
             ## for BUG scenarios? need to count "execution load" somewhere
             ## as well
         p.deref()
+        assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
+
+nil = Element.nil
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
 print("Env: %s" % (rep.env))
@@ -689,7 +720,20 @@ rep = Rep(SExpr.parse("(a (i 2 '(a 7 (c (- 2 '1) (* 5 2) 7)) '(c 5)))"))
 rep("(a 1 (c '150 '1 1))")
 #rep("(a 1 (c '15000 '1 1))")
 
+# sum factorial (+ 1! 2! 3! 4! ... n!)
+# (proxy for (sha256 1! 2! .. n!)
+# f 1 1 n
+# f a! a b = 
+# 4=fn 6=(a-1)! 5=a 7=left!
+
+rep = Rep(SExpr.parse("(a (i 7 '(c (c nil 6) (a 4 4 (* 6 5) (+ 5 '1) (- 7 '1))) '(c nil)))"))
+#rep("(a 1 1 '1 '1 '10)")
+rep("(c '+ (a 1 1 '1 '1 '10))")
+rep("(a (c '+ (a 1 1 '1 '1 '10)))", debug=True)
+xxx
+
 # fibonacci
+
 
 # 0 1 1 2 3 5 ...
 # 0 1 2 3 4 5
@@ -700,6 +744,9 @@ rep("(a 1 (c '150 '1 1))")
 
 rep = Rep(SExpr.parse("(a (i 2 '(a 15 (c (- 2 '1) 11 (+ 5 11) 15)) '(c 5)))"))
 rep("(a 1 (c '300 '0 '1 1))")
+
+rep = Rep(SExpr.parse("(a (i 4 '(a 7 (- 4 '1) 5 (+ 6 5) 7) '(c 6)))"))
+rep("(a 1 '300 '0 '1 1)")
 
 # levels:
 #   bytes/hex

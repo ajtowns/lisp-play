@@ -52,6 +52,9 @@
    any remaining unprocessed args `args`, and a modal parameter
    `what` which controls the recursion (0 to back out, 1 to resolve
    an opcode, 2 to resolve an argument)
+ - Evaluation is progressive but not properly lazy, in order for:
+      (h ('1 '2 '3 (x foo)))
+   to result in an exception, rather than 1
 
 ### Rep
 
@@ -63,11 +66,11 @@
  - `(x ...)` - "exception" -- fail execution with an error message
  - `(i COND TRUE FALSE) - "if" -- if `COND` is not nil evaluates as `TRUE`;
    otherwise evaluates as `FALSE` if supplied, or `nil` otherwise.
- - `(f LIST)` - "first" -- returns the first element of `LIST`
- - `(r LIST)` - "rest" -- returns the tail of `LIST`
+ - `(h LIST)` - "head" -- returns the head element of `LIST`
+ - `(t LIST)` - "tail" -- returns the tail of `LIST`
  - `(c EL1 EL2 .. TAIL)` - "concat" -- returns a LIST where the first
    elements are EL1, EL2, etc and the remainder is TAIL. Note that `(c T)`
-   just returns `T`.
+   just returns `T`. TAIL does not have to be a list itself.
  - `(add N1 N2 ..)` -- adds numbers, returns 0 if no numbers
  - `(mul N1 N2 ..)` -- multiplies numbers, returns 1 if no numbers
  - `(sub K N1 N2...)` -- subtracts numbers from `K`, `K` must be provided
@@ -85,7 +88,7 @@ This is not amenable to tail recursion, so builds up a stack of n elements
 
 Iteratively, it looks like:
 
-   `f(n, acc) = n == 0 ? acc : f(n-1, acc*n)`
+   `f(n, acc) = n == 0 ? acc : f(n-1, acc * n)`
 
 This is amenable to tail recursion, so can be interpreted more efficiently.
 
@@ -99,20 +102,20 @@ We implement the plain recursive version as follows:
    when `n` is non-zero and the right branch when `n` is zero. This means
    we need to quote both branches to avoid eager evaluation.
 
- * The base case (right branch) we write as `(q . 1)` which just evaluates
+ * The base case (right branch) we write as `'1` which just evaluates
    to `1`.
 
- * The recursive case (left branch) we write as `(q mul 2 ...)`, that is
+ * The recursive case (left branch) we write as `'(mul 2 ...)`, that is
    we will multiply `n` by a recursive formula. The recursive formula is
-   `(a 3 (c (sub 2 (q . 1)) 3))` -- which is just running our program
+   `(a 3 (c (sub 2 '1) 3))` -- which is just running our program
    `f` in a new environment, where the left subtree (`n`) is replaced by
    `n-1`.
 
- * We then call this by invoking `(a 1 (c (q . 150) 1))`
+ * We then call this by invoking `(a 1 (c '150 1))`
 
 This gives the following result:
 
-`MAX=5016 ; (a 1 (c (q . 150) 1)) -> 01d07da7ecb62cbddc2a166afb4cb7ed3175b5eb8e806e18cb2b4f4be3bbe2e3dc8207bf84713210a5db6d998a9ccff80c548cfe68ad9ca5e8e3945a223632785ec7de448c0724a0699433ff5aea1297e14dd8d12a5b851fb7c19284000000000000000000000000000000000000`
+`MAX=5016 ; (a 1 (c '150 1)) -> 01d07da7ecb62cbddc2a166afb4cb7ed3175b5eb8e806e18cb2b4f4be3bbe2e3dc8207bf84713210a5db6d998a9ccff80c548cfe68ad9ca5e8e3945a223632785ec7de448c0724a0699433ff5aea1297e14dd8d12a5b851fb7c19284000000000000000000000000000000000000`
 
 
 The iterative/tail-recursive approach is implemented similarly:
@@ -123,16 +126,16 @@ The iterative/tail-recursive approach is implemented similarly:
  * We have the same condition, namely `(a (i 2 (...) (...))`.
 
  * The recursive step is now mostly a matter of updating the environment,
-   which we do by constructing it as `(c (sub 2 (q . 1)) (mul 5 2) 7)`,
-   then recursing `(q a 7 ...)`.
+   which we do by constructing it as `(c (sub 2 '1) (mul 5 2) 7)`,
+   then recursing `'(a 7 ...)`.
 
  * The base case now requires returning the accumulated value, so it
-   becomes `(q c 5)`.
+   becomes `'(c 5)`.
 
- * We then call this by invoking `(a 1 (c (q . 150) (q . 1) 1))`
+ * We then call this by invoking `(a 1 (c '150 '1 1))`
 
 This results in:
 
-`MAX=1756 ; (a 1 (c (q . 150) (q . 1) 1)) -> 01d07da7ecb62cbddc2a166afb4cb7ed3175b5eb8e806e18cb2b4f4be3bbe2e3dc8207bf84713210a5db6d998a9ccff80c548cfe68ad9ca5e8e3945a223632785ec7de448c0724a0699433ff5aea1297e14dd8d12a5b851fb7c19284000000000000000000000000000000000000`
+`MAX=1756 ; (a 1 (c '150 '1 1)) -> 01d07da7ecb62cbddc2a166afb4cb7ed3175b5eb8e806e18cb2b4f4be3bbe2e3dc8207bf84713210a5db6d998a9ccff80c548cfe68ad9ca5e8e3945a223632785ec7de448c0724a0699433ff5aea1297e14dd8d12a5b851fb7c19284000000000000000000000000000000000000`
 
 which requires significantly less memory to calculate.
