@@ -674,10 +674,10 @@ rep("(c 4 ())")
 rep("(c 4 6 5 7 nil)")
 rep("(- '77 (* '3 (/ '77 '3)))")
 rep("(c '1 '2 '3 '4 (c '5 '(6 7)))")
-rep("(a (q + 7 (q . 3)) (c (q 1 . 2) 3))")
-rep("(c (q . 2) (q . 2))")
-rep("(c (q . 2) (sf 1 2 3 4 5))")
-rep("(c (l ()) (l (q . 1)) (l (q 1 2 3)) ())")
+rep("(a '(+ 7 '3) (c '(1 . 2) 3))")
+rep("(c '2 '2)")
+rep("(c '2 (sf . '(1 2 3 4 5)))")
+rep("(c (l ()) (l '1) (l '(1 2 3)) ())")
 
 # factorial
 rep = Rep(SExpr.parse("(a (i 2 '(* 2 (a 3 (c (- 2 '1) 3))) '1))"))
@@ -685,7 +685,7 @@ rep("(a 1 (c '150 1))")
 #rep("(a 1 (c '15000 1))")
 
 # factorial but efficient
-rep = Rep(SExpr.parse("(a (i 2 '(a 7 (c (- 2 '1) (* 5 2) 7)) (q c 5)))"))
+rep = Rep(SExpr.parse("(a (i 2 '(a 7 (c (- 2 '1) (* 5 2) 7)) '(c 5)))"))
 rep("(a 1 (c '150 '1 1))")
 #rep("(a 1 (c '15000 '1 1))")
 
@@ -698,8 +698,8 @@ rep("(a 1 (c '150 '1 1))")
 # fib 0 a b = a; fib n a b = fib (n-1) b (a+b)
 # env = (n a b FIB) ; n=2, a=5, b=11, FIB=15
 
-rep = Rep(SExpr.parse("(a (i 2 (q a 15 (c (- 2 (q . 1)) 11 (+ 5 11) 15)) (q c 5)))"))
-rep("(a 1 (c (q . 300) (q . 0) (q . 1) 1))")
+rep = Rep(SExpr.parse("(a (i 2 '(a 15 (c (- 2 '1) 11 (+ 5 11) 15)) '(c 5)))"))
+rep("(a 1 (c '300 '0 '1 1))")
 
 # levels:
 #   bytes/hex
