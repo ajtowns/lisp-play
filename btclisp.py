@@ -365,15 +365,15 @@ FUNCS = [
   (0x07, "t", op_t), # tail / cdr
   (0x08, "l", op_l), # is cons?
 
-#  (0x09, "not", op_none),
-#  (0x0a, "all", op_all),
-#  (0x0b, "any", op_any),
+#  (0x09, "not", op_nand),
+#  (0x0a, "all", op_and),
+#  (0x0b, "any", op_or),
 
 #  (0x0c, "=", op_eq),
-# (0x0d, "<s", op_str_lt),
-# (0x0e, "len", op_length),
-# (0x0f, "sub", op_substr),
-# (0x10, "cat", op_cat),
+#  (0x0d, "<s", op_str_lt),
+#  (0x0e, "len", op_length),
+#  (0x0f, "sub", op_substr),
+#  (0x10, "cat", op_cat),
 
 #  (0x11, "~",op_bit_not),
 #  (0x12, "&", op_bit_and),
@@ -396,33 +396,33 @@ FUNCS = [
 #  (0x1e, ">>", op_rshift_u64),
 #  (0x1f, "log2e42", op_log2e42_u64),
 
-#  (0x20, "bn+", op_add_bn),
-#  (0x21, "bn-", op_sub_bn),
-#  (0x22, "bn*", op_mul_bn),
-#  (0x23, "bn%", op_mod_bn),
-#  (0x24, "bn/%", op_divmod_bn), # (/ a b) => (h (/% a b))
-#  (0x25, "bn<", op_lt_bn),
-#  (0x26, "bn<<", op_lshift_bn),
-#  (0x27, "bn>>", op_rshift_bn),
-#  (0x28, "bnlog2e42", op_log2e42_bn),
+#  (0x20, "rd_csn", op_csn_read),  # convert CScriptNum to atom
+#  (0x21, "wr_csn", op_csn_write), # convert atom to CScriptNum
+#  (0x22, "rd_list", op_list_read), # read bytes to Element
+#  (0x23, "wr_list", op_list_write), # write Element as bytes
 
-#  (0x29, "rd_csn", op_csn_read),
-#  (0x2a, "wr_csn", op_csn_write),
-#  (0x2b, "rd_list", op_list_read),
-#  (0x2c, "wr_list", op_list_write),
+#  (0x24, "sha256", op_sha256),
+#  (0x25, "ripemd160", op_ripemd160),
+#  (0x26, "hash160", op_hash160),
+#  (0x27, "hash256", op_hash256),
+#  (0x28, "bip340_verify", op_bip340_verify),
+#  (0x29, "ecdsa_verify", op_ecdsa_verify),
+#  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
 
-#  (0x2d, "sha256", op_sha256),
-#  (0x2e, "ripemd160", op_ripemd160),
-#  (0x2f, "hash160", op_hash160),
-#  (0x30, "hash256", op_hash256),
-#  (0x31, "bip340_verify", op_bip340_verify),
-#  (0x32, "ecdsa_verify", op_ecdsa_verify),
-#  (0x33, "secp256k1_muladd", op_secp256k1_muladd),
+#  (0x2b, "tx", op_tx),
+#  (0x2c, "bip341_tx", op_bip341_tx),
+#  (0x2d, "bip342_txmsg", op_bip342_txmsg),
+#  (0x2e, "bip345_vault", op_bip345_vault),
 
-#  (0x34, "tx", op_tx),
-#  (0x35, "bip341_tx", op_bip341_tx),
-#  (0x36, "bip342_txmsg", op_bip342_txmsg),
-#  (0x37, "bip345_vault", op_bip345_vault),
+#  (0x50, "bn+", op_add_bn),
+#  (0x51, "bn-", op_sub_bn),
+#  (0x52, "bn*", op_mul_bn),
+#  (0x53, "bn%", op_mod_bn),
+#  (0x54, "bn/%", op_divmod_bn), # (/ a b) => (h (/% a b))
+#  (0x55, "bn<", op_lt_bn),
+#  (0x56, "bn<<", op_lshift_bn),
+#  (0x57, "bn>>", op_rshift_bn),
+#  (0x58, "bnlog2e42", op_log2e42_bn),
 ]
 
 def _Do_FUNCS():
