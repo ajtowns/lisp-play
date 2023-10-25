@@ -2,6 +2,7 @@
 
 import re
 import hashlib
+import verystable.core.key
 
 class Allocator:
     """simple object to monitor how much space is used up by
@@ -167,7 +168,7 @@ class Element:
     def check_equal(cls, stk):
         while stk:
             (a, b) = stk.pop()
-            assert isinstance(cls, a) and isinstance(cls, b)
+            assert isinstance(a, cls) and isinstance(b, cls)
             if a is b: continue
             if a.is_atom() != b.is_atom(): return False
             if a.is_atom():
@@ -385,7 +386,7 @@ class op_eq(Operator):
                 self.h = el
                 return
             else:
-                if not Element.check_equal(self.h, el):
+                if not Element.check_equal([(self.h, el)]):
                     self.h.deref()
                     self.h, self.ok = None, False
                 el.deref()
@@ -544,20 +545,6 @@ class op_sha256(Operator):
     def finish(self):
         return Element(n=self.st.digest())
 
-class op_ripemd160(Operator):
-    def __init__(self):
-        # may fail depending on your openssl
-        self.st = hashlib.new("ripemd160")
-
-    def argument(self, el):
-        if el.n is None:
-            raise Exception("ripemd160: cannot hash list")
-        self.st.update(el.n)
-        el.deref()
-
-    def finish(self):
-        return Element(n=self.st.digest())
-
 class op_hash160(op_sha256):
     def finish(self):
         x = hashlib.new("ripemd160")
@@ -569,6 +556,31 @@ class op_hash256(op_sha256):
         x = hashlib.sha256()
         x.update(self.st.digest())
         return Element(n=x.digest())
+
+class op_bip340_verify(Operator):
+    def __init__(self):
+        self.args = []
+
+    def argument(self, el):
+        if not el.is_atom():
+            raise Exception("bip340_verify: argument must be atom")
+        if len(self.args) < 3:
+            self.args.append(el)
+        else:
+            raise Exception("bip340_verify: too many arguments")
+
+    def finish(self):
+        if len(self.args) != 3:
+            raise Exception("bip340_verify: too few arguments")
+        pk, m, sig = self.args
+        if len(pk.n) != 32 or len(m.n) != 32 or len(sig.n) != 64:
+            r = False
+        else:
+            r = verystable.core.key.verify_schnorr(key=pk.n, sig=sig.n, msg=m.n)
+        pk.deref()
+        m.deref()
+        sig.deref()
+        return Element.from_bool(r)
 
 FUNCS = [
   (b'', "q", None), # quoting indicator, special
@@ -616,10 +628,10 @@ FUNCS = [
 #  (0x23, "wr_list", op_list_write), # write Element as bytes
 
   (0x24, "sha256", op_sha256),
-  (0x25, "ripemd160", op_ripemd160),
+ # (0x25, "ripemd160", op_ripemd160),
   (0x26, "hash160", op_hash160),
   (0x27, "hash256", op_hash256),
-#  (0x28, "bip340_verify", op_bip340_verify),
+  (0x28, "bip340_verify", op_bip340_verify),
 #  (0x29, "ecdsa_verify", op_ecdsa_verify),
 #  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
 
@@ -976,6 +988,21 @@ rep("(a 1 '300 '0 '1 1)")
 rep = Rep(SExpr.parse("0x0200000015a20d97f5a65e130e08f2b254f97f65b96173a7057aef0da203000000000000887e309c02ebdddbd0f3faff78f868d61b1c4cff2a25e5b3c9d90ff501818fa0e7965d508bdb051a40d8d8f7"))
 rep("(sha256 (sha256 1))")
 rep("(hash256 1)")
+
+
+bip340_tests = [
+"F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9,0000000000000000000000000000000000000000000000000000000000000000,E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0,TRUE",
+"DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659,243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89,6896BD60EEAE296DB48A229FF71DFE071BDE413E6D43F917DC8DCF8C78DE33418906D11AC976ABCCB20B091292BFF4EA897EFCB639EA871CFA95F6DE339E4B0A,TRUE",
+"DD308AFEC5777E13121FA72B9CC1B7CC0139715309B086C960E18FD969774EB8,7E2D58D8B3BCDF1ABADEC7829054F90DDA9805AAB56C77333024B9D0A508B75C,5831AAEED7B44BB74E5EAB94BA9D4294C49BCF2A60728D8B4C200F50DD313C1BAB745879A5AD954A72C45A91C3A51D3C7ADEA98D82F8481E0E1E03674A6F3FB7,TRUE",
+"25D1DFF95105F5253C4022F628A996AD3A0D95FBF21D468A1B33F8C160D8F517,FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF,7EB0509757E246F19449885651611CB965ECC1A187DD51B64FDA1EDC9637D5EC97582B9CB13DB3933705B32BA982AF5AF25FD78881EBB32771FC5922EFC66EA3,TRUE",
+"D69C3509BB99E412E68B0FE8544E72837DFA30746D8BE2AA65975F29D22DC7B9,4DF3C3F68FCC83B27E9D42C90431A72499F17875C81A599B566C9889B9696703,00000000000000000000003B78CE563F89A0ED9414F5AA28AD0D96D6795F9C6376AFB1548AF603B3EB45C9F8207DEE1060CB71C04E80F593060B07D28308D7F4,TRUE",
+"EEFDEA4CDB677750A420FEE807EACF21EB9898AE79B9768766E4FAA04A2D4A34,243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89,6CFF5C3BA86C69EA4B7376F31A9BCB4F74C1976089B2D9963DA2E5543E17776969E89B4C5564D00349106B8497785DD7D1D713A8AE82B32FA79D5F7FC407D39B,FALSE",
+"DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659,243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89,FFF97BD5755EEEA420453A14355235D382F6472F8568A18B2F057A14602975563CC27944640AC607CD107AE10923D9EF7A73C643E166BE5EBEAFA34B1AC553E2,FALSE",
+]
+for x in bip340_tests:
+    key, msg, sig, result = x.split(",")
+    result = 1 if result == "TRUE" else 0
+    rep(f"(c (bip340_verify '0x{key} '0x{msg} '0x{sig}) '{result} nil)")
 
 # levels:
 #   bytes/hex
