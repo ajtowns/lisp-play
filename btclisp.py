@@ -3,6 +3,8 @@
 import re
 import hashlib
 import verystable.core.key
+import verystable.core.messages
+import verystable.core.script
 
 class Allocator:
     """simple object to monitor how much space is used up by
@@ -159,7 +161,7 @@ class Element:
             raise Exception(f"{fn}: not a number: {self}")
         return int.from_bytes(self.n, byteorder='little', signed=True)
 
-    def as_u64(self, fn):
+    def as_u64(self, fn="u64"):
         if self.n is None:
             raise Exception(f"{fn}: not a number: {self}")
         return int.from_bytes(self.n[-8:], byteorder='little', signed=False)
@@ -582,6 +584,125 @@ class op_bip340_verify(Operator):
         sig.deref()
         return Element.from_bool(r)
 
+class op_bip342_txmsg:
+    def __init__(self):
+        self.sighash = None
+
+    def argument(self, el):
+        if self.sighash is not None:
+            raise Exception("bip342_txmsg: too many arguments")
+        if not el.is_atom() or len(el.n) > 1:
+            raise Exception("bip342_txmsg: expects a single sighash byte")
+        if el.n != b'' and el.n[0] not in [0x01, 0x02, 0x03, 0x81, 0x82, 0x83]:
+            raise Exception("bip342_txmsg: unknown sighash byte")
+        self.sighash = el.as_u64()
+        el.deref()
+
+    def finish(self):
+        if self.sighash is None: self.sighash = 0
+        annex = None
+        if len(GLOBAL_TX.wit.vtxinwit) > 0:
+            w = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
+            if len(w) > 0 and w[-1][0] == 0x50:
+                annex = w[-1]
+        r = verystable.core.script.TaprootSignatureHash(txTo=GLOBAL_TX, spent_utxos=GLOBAL_UTXOS, hash_type=self.sighash, input_index=GLOBAL_TX_INPUT_IDX, scriptpath=True, annex=annex, script=GLOBAL_TX_SCRIPT)
+        return Element(n=r)
+
+class op_tx:
+    def __init__(self):
+        # build up r as we go, by updating last_cons
+        self.r = None
+        self.last_cons = None
+
+    def argument(self, el):
+        # el is either an atom giving info about the tx as a whole
+        # or a pair of what info is requested, plus what input/output idx
+        #  we want info about
+        if el.is_atom():
+            code = el.as_u64()
+            which = None
+        else:
+            if not el.h.is_atom() or not el.t.is_atom():
+                raise Exception("tx: expects atoms or pairs of atoms")
+            code = el.h.as_u64()
+            which = el.t.as_u64()
+        el.deref()
+        result = self.get_tx_info(code, which)
+        if self.r is None:
+            self.r = result
+        elif self.last_cons is None:
+            t = Element(h=self.r, t=Element.nil)
+            self.r = self.last_cons = Element(h=result, t=t)
+        else:
+            self.last_cons.t = Element(h=result, t=self.last_cons.t)
+            self.last_cons = self.last_cons.t
+
+    def get_tx_info(self, code, which):
+        if 0 <= code <= 9:
+            if which is not None: raise Exception(f"tx: {code} should be an atom not a pair")
+            return self.get_tx_global_info(code)
+        elif 10 <= code <= 19:
+            if which is None: which = GLOBAL_TX_INPUT_IDX
+            if which < 0 or which >= len(GLOBAL_TX.vin):
+                raise Exception(f"tx: {code} invalid input index")
+            return self.get_tx_input_info(code, which)
+        elif 20 <= code <= 29:
+            if which is None or which < 0 or which >= len(GLOBAL_TX.vout):
+                raise Exception(f"tx: {code} requires valid output index")
+            return self.get_tx_output_info(code, which)
+        else:
+            raise Exception(f"tx: {code} out of range")
+
+    def get_tx_global_info(self, code):
+        if code == 0:
+            return Element(n=GLOBAL_TX.nVersion)
+        elif code == 1:
+            return Element(n=GLOBAL_TX.nLockTime)
+        elif code == 2:
+            return Element(n=len(GLOBAL_TX.vin))
+        elif code == 3:
+            return Element(n=len(GLOBAL_TX.vout))
+        elif code == 4:
+            return Element(n=GLOBAL_TX_INPUT_IDX)
+        else:
+            return Element.nil
+
+    def get_tx_input_info(self, code, which):
+        txin = GLOBAL_TX.vin[which]
+        wit = GLOBAL_TX.wit.vtxinwit[which].scriptWitness.stack
+        coin = GLOBAL_UTXOS[which]
+        if code == 10:
+             return Element(n=txin.nSequence)
+        elif code == 11:
+             return Element(n=verystable.core.messages.ser_uint256(txin.prevout.hash))
+        elif code == 12:
+             return Element(n=txin.prevout.n)
+        elif code == 13:
+             return Element(n=txin.scriptSig)
+        elif code == 14:
+             if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
+                 return Element(n=wit[-1])
+             else:
+                 return Element.nil
+        elif code == 15:
+             return Element(n=coin.nValue)
+        elif code == 16:
+             return Element(n=coin.scriptPubKey)
+        else:
+             return Element.nil
+
+    def get_tx_output_info(self, code, which):
+        out = GLOBAL_TX.vout[which]
+        if code == 20:
+             return Element(n=out.nValue)
+        elif code == 21:
+             return Element(n=out.scriptPubKey)
+        else:
+             return Element.nil
+
+    def finish(self):
+        return self.r
+
 FUNCS = [
   (b'', "q", None), # quoting indicator, special
 
@@ -635,10 +756,8 @@ FUNCS = [
 #  (0x29, "ecdsa_verify", op_ecdsa_verify),
 #  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
 
-#  (0x2b, "tx", op_tx),
-#  (0x2c, "bip341_tx", op_bip341_tx),
-#  (0x2d, "bip342_txmsg", op_bip342_txmsg),
-#  (0x2e, "bip345_vault", op_bip345_vault),
+  (0x2b, "tx", op_tx),
+  (0x2c, "bip342_txmsg", op_bip342_txmsg),
 
 #  (0x50, "bn+", op_add_bn),
 #  (0x51, "bn-", op_sub_bn),
@@ -1003,6 +1122,22 @@ for x in bip340_tests:
     key, msg, sig, result = x.split(",")
     result = 1 if result == "TRUE" else 0
     rep(f"(c (bip340_verify '0x{key} '0x{msg} '0x{sig}) '{result} nil)")
+
+GLOBAL_TX = verystable.core.messages.tx_from_hex("f0ccee2a000101ebf2f9fc896e70145c84116fae33d0242f8c146e1a07deecd9a98d9cc03f4fb70d000000002badf3fb01126b8c01000000001976a914551b850385def11149727e72c4470ffaeae5cdf288ac04402c797661dfac511e35f42601edd355e9cffb6ce47beddd9a9bf0914992c002af34c67933f89da981149f6044448f14ec7931f3641da82fac3aa9512d052e3b712220256c556c3663e1cfe2412e879bc1ace16785aa79c0ae1840e831e837ab9d963fac21c0cdb18e708d5164ecbd681797623cb8f9be34dd1765ef0b63788d18ca4db18478025073ee1a6e46")
+GLOBAL_TX_INPUT_IDX = 0
+GLOBAL_TX_SCRIPT = bytes.fromhex("20256c556c3663e1cfe2412e879bc1ace16785aa79c0ae1840e831e837ab9d963fac")
+GLOBAL_UTXOS = [
+    verystable.core.messages.from_hex(verystable.core.messages.CTxOut(), "1fc6d101000000002251203240405372856fe921522eca27514e2669f0aa4c46d52c78cfe608174828f937")
+]
+
+rep("(bip342_txmsg)")
+rep("(bip340_verify '0x256c556c3663e1cfe2412e879bc1ace16785aa79c0ae1840e831e837ab9d963f (bip342_txmsg) '0x2c797661dfac511e35f42601edd355e9cffb6ce47beddd9a9bf0914992c002af34c67933f89da981149f6044448f14ec7931f3641da82fac3aa9512d052e3b71)")
+
+rep("(tx '0 '1 '2 '3 '4)")
+rep("(tx '10 '11 '12 '13 '14 '15 '16)")
+rep("(tx '(10 . 0) '(11 . 0) '(12 . 0) '(13 . 0) '(14 . 0) '(15 . 0) '(16 . 0))")
+rep("(tx '(20 . 0) '(21 . 0))")
+rep("(- (tx '15) (tx '(20 . 0)))")
 
 # levels:
 #   bytes/hex
