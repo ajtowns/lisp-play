@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import re
+import hashlib
 
 class Allocator:
     """simple object to monitor how much space is used up by
@@ -29,7 +30,18 @@ class Allocator:
 ALLOCATOR = Allocator()
 
 class Element:
-    def __init__(self, *, n=None, h=None, t=None):
+    def __init__(self, *, n=None, u64=None, h=None, t=None):
+        if u64 is not None:
+            assert n is None
+            assert isinstance(u64, int)
+            assert u64 >= 0 and u64 <= 0xFFFF_FFFF_FFFF_FFFF
+            if u64 == 0:
+                n = b''
+            else:
+                bl = (u64.bit_length()+7)//8
+                n = u64.to_bytes(bl, byteorder='little', signed=False)
+            u64 = None
+
         assert (n is None) != (h is None and t is None)
         self.refs = 1
 
@@ -40,7 +52,7 @@ class Element:
                 n = b''
             else:
                 bl = (n.bit_length() + 8)//8
-                n = n.to_bytes(bl, byteorder='big', signed=True)
+                n = n.to_bytes(bl, byteorder='little', signed=True)
         assert n is None or isinstance(n, bytes)
 
         if h is not None:
@@ -55,6 +67,7 @@ class Element:
 
     re_printable = re.compile(b"^[a-z]+$")
     _nil = None
+    _one = None
 
     @classmethod
     @property
@@ -63,11 +76,23 @@ class Element:
             cls._nil = cls(n=0)
         return cls._nil.bumpref()
 
+    @classmethod
+    def from_bool(cls, b):
+        if b:
+            if cls._one is None:
+                cls._one = cls(n=1)
+            return cls._one.bumpref()
+        else:
+            return cls.nil
+
     def alloc_size(self):
         if self.n is None:
-            return 12
+            return 24 # two pointers plus type plus refcount
+        elif len(self.n) <= 8:
+            return 24 # 0-8 bytes, plus length, plus type plus refcount
         else:
-            return (len(self.n)//8)*8 + 16
+            malloc = (len(self.n)+31)//16*16 # bitcoin MallocUssage()
+            return malloc + 24 # malloc, pointer, size, type, refcount
 
     def bumpref(self):
         assert self.refs >= 1
@@ -131,7 +156,29 @@ class Element:
     def as_int(self, fn):
         if self.n is None:
             raise Exception(f"{fn}: not a number: {self}")
-        return int.from_bytes(self.n, byteorder='big', signed=True)
+        return int.from_bytes(self.n, byteorder='little', signed=True)
+
+    def as_u64(self, fn):
+        if self.n is None:
+            raise Exception(f"{fn}: not a number: {self}")
+        return int.from_bytes(self.n[-8:], byteorder='little', signed=False)
+
+    @classmethod
+    def check_equal(cls, stk):
+        while stk:
+            (a, b) = stk.pop()
+            assert isinstance(cls, a) and isinstance(cls, b)
+            if a is b: continue
+            if a.is_atom() != b.is_atom(): return False
+            if a.is_atom():
+                if a.n != b.n: return False
+            elif a.t.is_atom() or b.t.is_atom() or a.t is b.t:
+                stk.append( (a.h, b.h) )
+                stk.append( (a.t, b.t) )
+            else:
+                stk.append( (a.t, b.t) )
+                stk.append( (a.h, b.h) )
+        return True
 
 class Operator:
     state = 0
@@ -222,6 +269,12 @@ class op_i(Operator):
             raise Exception("i: must provide then argument")
         return self.result
 
+class op_softfork(Operator):
+    def argument(self, el):
+        el.deref()
+    def finish(self):
+        return Element.from_bool(True)
+
 class op_h(Operator):
     def argument(self, el):
         if self.state > 0:
@@ -263,10 +316,7 @@ class op_l(Operator):
     def finish(self):
         if self.state == 0:
             raise Exception("l: must provide list argument")
-        if self.r:
-            return Element(n=1)
-        else:
-            return Element.nil
+        return Element.from_bool(self.r)
 
 class op_c(Operator):
     # (c head tail), (c h1 h2 h3 tail)
@@ -290,67 +340,235 @@ class op_c(Operator):
             return Element.nil
         return self.res
 
-class op_add(Operator):
+class op_nand(Operator):
+    # aka are any false?
+    def __init__(self):
+        self.b = False
+    def argument(self, el):
+        if el.is_nil():
+            self.b = True
+        el.deref()
+    def finish(self):
+        return Element.from_bool(self.b)
+
+class op_and(Operator):
+    # aka are all true?
+    def __init__(self):
+        self.b = True
+    def argument(self, el):
+        if el.is_nil():
+            self.b = False
+        el.deref()
+    def finish(self):
+        return Element.from_bool(self.b)
+
+class op_or(Operator):
+    # aka are any true?
+    def __init__(self):
+        self.b = False
+    def argument(self, el):
+        if not el.is_nil():
+            self.b = True
+        el.deref()
+    def finish(self):
+        return Element.from_bool(self.b)
+
+class op_eq(Operator):
+    def __init__(self):
+        self.h = None
+        self.ok = True
+    def argument(self, el):
+        if not self.ok:
+            el.deref()
+        else:
+            if self.h is None:
+                self.h = el
+                return
+            else:
+                if not Element.check_equal(self.h, el):
+                    self.h.deref()
+                    self.h, self.ok = None, False
+                el.deref()
+    def finish(self):
+        if self.h is not None:
+            self.h.deref()
+        return Element.from_bool(self.ok)
+
+def op_len(Operator):
+   def __init__(self):
+       self.v = 0
+   def argument(self, el):
+        if not el.is_atom():
+            raise Exception(f"len: not an atom: {el}")
+        self.v += len(el.n)
+        el.deref()
+   def finish(self):
+        return Element(n=self.v)
+
+def op_cat(Operator):
+    def __init__(self):
+       self.build = None
+    def argument(self, el):
+       if self.build is None:
+           self.build = el
+       elif self.build.refs == 1:
+           self.build.n += el.n
+           el.deref()
+       else:
+           b2 = Element(n=(self.build.n + el.n))
+           self.build.deref()
+           el.deref()
+           self.build = b2
+    def finish(self):
+        if self.build is None: return Element.nil
+        return self.build
+
+def op_substr(Operator):
+    def __init__(self):
+        self.el = None
+        self.start = None
+        self.end = None
+    def argument(self, el):
+        if self.el is None:
+            if not self.el.is_atom():
+                raise Exception("substr: must be atom")
+            self.el = el
+        elif self.start is None:
+            self.start = el.as_u64("substr")
+            el.deref()
+        elif self.end is None:
+            self.end = el.as_u64("substr")
+            el.deref()
+        else:
+            raise Exception("substr: too many arguments")
+    def finish(self):
+        if self.el is None: return Element.nil
+        if self.start is None: return self.el
+        if self.start == 0:
+             if self.end is None: return self.el
+             if self.end >= len(self.el.n): return self.el
+        if self.end is None:
+            self.end = len(self.el.n)
+        s = Element(n=self.el.n[self.start:self.end])
+        self.el.deref()
+        return s
+
+class op_add_u64(Operator):
     def __init__(self):
         self.i = 0
 
     def argument(self, el):
-        self.i += el.as_int("add")
+        self.i += el.as_u64("add")
+        self.i %= 0x1_0000_0000_0000_0000
         el.deref()
 
     def finish(self):
-        return Element(n=self.i)
+        return Element(u64=self.i)
 
-class op_mul(Operator):
+class op_mul_u64(Operator):
     def __init__(self):
         self.i = 1
 
     def argument(self, el):
-        self.i *= el.as_int("mul")
+        self.i *= el.as_u64("mul")
+        self.i %= 0x1_0000_0000_0000_0000
         el.deref()
 
     def finish(self):
-        return Element(n=self.i)
+        return Element(u64=self.i)
 
-class op_sub(Operator):
+class op_sub_u64(Operator):
     def __init__(self):
         self.i = None
 
     def argument(self, el):
-        n = el.as_int("sub")
+        n = el.as_u64("sub")
         el.deref()
         if self.i is None:
             self.i = n
         else:
             self.i -= n
+            self.i %= 0x1_0000_0000_0000_0000
 
     def finish(self):
         if self.i is None:
             raise Exception("sub: missing arguments")
-        return Element(n=self.i)
+        return Element(u64=self.i)
 
-class op_div(Operator):
+# op_mod / op_divmod
+class op_div_u64(Operator):
     def __init__(self):
         self.i = None
 
     def argument(self, el):
-        n = el.as_int("div")
+        n = el.as_u64("div")
         el.deref()
         if self.i is None:
             self.i = n
         else:
+            ## if el >= 2**64 should we just set i to 0?
+            if n == 0:
+                raise Exception("div: attempted div by 0")
             self.i //= n
 
     def finish(self):
         if self.i is None:
             raise Exception("div: missing arguments")
-        return Element(n=self.i)
+        return Element(u64=self.i)
 
-class op_softfork(Operator):
+class op_lt_u64(Operator):
+    def __init__(self):
+        self.i = -1
+
     def argument(self, el):
+        k = el.as_u64("lt")
+        if self.i is not None and self.i < k:
+            self.i = k
+        else:
+            self.i = None
         el.deref()
+
     def finish(self):
-        return Element(n=1)
+        return Element.from_bool(self.i is not None)
+
+class op_sha256(Operator):
+    def __init__(self):
+        self.st = hashlib.sha256()
+
+    def argument(self, el):
+        if el.n is None:
+            raise Exception("sha256: cannot hash list")
+        self.st.update(el.n)
+        el.deref()
+
+    def finish(self):
+        return Element(n=self.st.digest())
+
+class op_ripemd160(Operator):
+    def __init__(self):
+        # may fail depending on your openssl
+        self.st = hashlib.new("ripemd160")
+
+    def argument(self, el):
+        if el.n is None:
+            raise Exception("ripemd160: cannot hash list")
+        self.st.update(el.n)
+        el.deref()
+
+    def finish(self):
+        return Element(n=self.st.digest())
+
+class op_hash160(op_sha256):
+    def finish(self):
+        x = hashlib.new("ripemd160")
+        x.update(self.st.digest())
+        return Element(n=x.digest())
+
+class op_hash256(op_sha256):
+    def finish(self):
+        x = hashlib.sha256()
+        x.update(self.st.digest())
+        return Element(n=x.digest())
 
 FUNCS = [
   (b'', "q", None), # quoting indicator, special
@@ -365,15 +583,15 @@ FUNCS = [
   (0x07, "t", op_t), # tail / cdr
   (0x08, "l", op_l), # is cons?
 
-#  (0x09, "not", op_nand),
-#  (0x0a, "all", op_and),
-#  (0x0b, "any", op_or),
+  (0x09, "not", op_nand),
+  (0x0a, "all", op_and),
+  (0x0b, "any", op_or),
 
-#  (0x0c, "=", op_eq),
+  (0x0c, "=", op_eq),
 #  (0x0d, "<s", op_str_lt),
-#  (0x0e, "len", op_length),
-#  (0x0f, "sub", op_substr),
-#  (0x10, "cat", op_cat),
+  (0x0e, "len", op_len),
+  (0x0f, "substr", op_substr),
+  (0x10, "cat", op_cat),
 
 #  (0x11, "~",op_bit_not),
 #  (0x12, "&", op_bit_and),
@@ -382,16 +600,12 @@ FUNCS = [
 #  (0x15, "b<<", op_bit_lshift),
 #  (0x16, "b>>", op_bit_rshift),
 
-  (0x17, "+", op_add),
-  (0x18, "-", op_sub),
-  (0x19, "*", op_mul),
-  (0x1a, "/", op_div),
-#  (0x17, "+", op_add_u64),
-#  (0x18, "-", op_sub_u64),
-#  (0x19, "*", op_mul_u64),
+  (0x17, "+", op_add_u64),
+  (0x18, "-", op_sub_u64),
+  (0x19, "*", op_mul_u64),
 #  (0x1a, "%", op_mod_u64),
 #  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))
-#  (0x1c, "<", op_lt_u64),
+  (0x1c, "<", op_lt_u64),
 #  (0x1d, "<<", op_lshift_u64),
 #  (0x1e, ">>", op_rshift_u64),
 #  (0x1f, "log2e42", op_log2e42_u64),
@@ -401,10 +615,10 @@ FUNCS = [
 #  (0x22, "rd_list", op_list_read), # read bytes to Element
 #  (0x23, "wr_list", op_list_write), # write Element as bytes
 
-#  (0x24, "sha256", op_sha256),
-#  (0x25, "ripemd160", op_ripemd160),
-#  (0x26, "hash160", op_hash160),
-#  (0x27, "hash256", op_hash256),
+  (0x24, "sha256", op_sha256),
+  (0x25, "ripemd160", op_ripemd160),
+  (0x26, "hash160", op_hash160),
+  (0x27, "hash256", op_hash256),
 #  (0x28, "bip340_verify", op_bip340_verify),
 #  (0x29, "ecdsa_verify", op_ecdsa_verify),
 #  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
@@ -493,7 +707,7 @@ class SExpr:
                 elif a == "nil":
                     a = 0
                 elif cls.re_hex.match(a):
-                    a = bytes.from_hex(a[2:])
+                    a = bytes.fromhex(a[2:])
                 elif cls.re_int.match(a):
                     a = int(a, 10)
                 elif cls.re_quote.match(a):
@@ -682,6 +896,7 @@ class Rep:
         assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
 
 nil = Element.nil
+one = Element.from_bool(True)
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
 print("Env: %s" % (rep.env))
@@ -703,12 +918,23 @@ rep("(a '(+ 7 '3) '((1 . 2) . (3 . 4)))")
 rep("(c 1 ())")
 rep("(c 4 ())")
 rep("(c 4 6 5 7 nil)")
-rep("(- '77 (* '3 (/ '77 '3)))")
+#rep("(- '77 (* '3 (/ '77 '3)))")
 rep("(c '1 '2 '3 '4 (c '5 '(6 7)))")
 rep("(a '(+ 7 '3) (c '(1 . 2) 3))")
 rep("(c '2 '2)")
 rep("(c '2 (sf . '(1 2 3 4 5)))")
 rep("(c (l ()) (l '1) (l '(1 2 3)) ())")
+rep("(all '1 '2 '3 '4)")
+rep("(not '1 '2 '3 '4)")
+rep("(all '1 '2 '0 '4)")
+rep("(not '1 '2 '0 '4)")
+rep("(any '0 '0 '5 '0)")
+rep("(< '1 '2 '3 '4 '5)")
+rep("(< '1 '2 '4 '4 '5)")
+rep("(<)")
+rep("(< '1)")
+rep("(< '1 '2)")
+rep("(< '2 '1)")
 
 # factorial
 rep = Rep(SExpr.parse("(a (i 2 '(* 2 (a 3 (c (- 2 '1) 3))) '1))"))
@@ -729,8 +955,7 @@ rep("(a 1 (c '150 '1 1))")
 rep = Rep(SExpr.parse("(a (i 7 '(c (c nil 6) (a 4 4 (* 6 5) (+ 5 '1) (- 7 '1))) '(c nil)))"))
 #rep("(a 1 1 '1 '1 '10)")
 rep("(c '+ (a 1 1 '1 '1 '10))")
-rep("(a (c '+ (a 1 1 '1 '1 '10)))", debug=True)
-xxx
+rep("(a (c '+ (a 1 1 '1 '1 '10)))")
 
 # fibonacci
 
@@ -747,6 +972,10 @@ rep("(a 1 (c '300 '0 '1 1))")
 
 rep = Rep(SExpr.parse("(a (i 4 '(a 7 (- 4 '1) 5 (+ 6 5) 7) '(c 6)))"))
 rep("(a 1 '300 '0 '1 1)")
+
+rep = Rep(SExpr.parse("0x0200000015a20d97f5a65e130e08f2b254f97f65b96173a7057aef0da203000000000000887e309c02ebdddbd0f3faff78f868d61b1c4cff2a25e5b3c9d90ff501818fa0e7965d508bdb051a40d8d8f7"))
+rep("(sha256 (sha256 1))")
+rep("(hash256 1)")
 
 # levels:
 #   bytes/hex
