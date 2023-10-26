@@ -25,6 +25,12 @@ class Allocator:
             self.max = self.x
         self.alloced.add(w)
 
+    def realloc(self, old, new, w):
+        assert w in self.alloced
+        self.x += (new - old)
+        if self.x > self.max:
+            self.max = self.x
+
     def free(self, n, w):
         assert n >= 0
         self.x -= n
@@ -397,7 +403,7 @@ class op_eq(Operator):
             self.h.deref()
         return Element.from_bool(self.ok)
 
-def op_len(Operator):
+class op_strlen(Operator):
    def __init__(self):
        self.v = 0
    def argument(self, el):
@@ -408,32 +414,37 @@ def op_len(Operator):
    def finish(self):
         return Element(n=self.v)
 
-def op_cat(Operator):
+class op_cat(Operator):
     def __init__(self):
-       self.build = None
+        self.build = None
     def argument(self, el):
-       if self.build is None:
-           self.build = el
-       elif self.build.refs == 1:
-           self.build.n += el.n
-           el.deref()
-       else:
-           b2 = Element(n=(self.build.n + el.n))
-           self.build.deref()
-           el.deref()
-           self.build = b2
+        if not el.is_atom():
+            raise Exception(f"cat: argument not an atom: {el}")
+        if self.build is None:
+            self.build = el
+        elif self.build.refs == 1:
+            old_size = self.build.alloc_size()
+            self.build.n += el.n
+            new_size = self.build.alloc_size()
+            ALLOCATOR.realloc(old_size, new_size, self.build)
+            el.deref()
+        else:
+            b2 = Element(n=(self.build.n + el.n))
+            self.build.deref()
+            el.deref()
+            self.build = b2
     def finish(self):
         if self.build is None: return Element.nil
         return self.build
 
-def op_substr(Operator):
+class op_substr(Operator):
     def __init__(self):
         self.el = None
         self.start = None
         self.end = None
     def argument(self, el):
         if self.el is None:
-            if not self.el.is_atom():
+            if not el.is_atom():
                 raise Exception("substr: must be atom")
             self.el = el
         elif self.start is None:
@@ -631,8 +642,8 @@ class op_tx:
         if self.r is None:
             self.r = result
         elif self.last_cons is None:
-            t = Element(h=self.r, t=Element.nil)
-            self.r = self.last_cons = Element(h=result, t=t)
+            self.last_cons = Element(h=result, t=Element.nil)
+            self.r = Element(h=self.r, t=self.last_cons)
         else:
             self.last_cons.t = Element(h=result, t=self.last_cons.t)
             self.last_cons = self.last_cons.t
@@ -666,6 +677,24 @@ class op_tx:
             return Element(n=GLOBAL_TX_INPUT_IDX)
         elif code == 5:
             return Element(n=GLOBAL_TX.serialize_without_witness())
+        elif code == 6:
+            wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
+            n = len(wit) - 1
+            if n >= 0 and wit[n][0] == 0x50: n -= 1 # skip annex
+            if n >= 1 and len(wit[n]) > 0:
+                v = (wit[n][0] & 0xFE)
+                s = wit[n-1]
+                h = verystable.core.key.TaggedHash("TapLeaf", bytes([v]) + verystable.core.messages.ser_string(s))
+                return Element(n=h)
+            else:
+                return Element.nil
+
+        elif code == 7:
+            wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
+            if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
+                return Element(n=wit[-1])
+            else:
+                return Element.nil
         else:
             return Element.nil
 
@@ -674,11 +703,11 @@ class op_tx:
         wit = GLOBAL_TX.wit.vtxinwit[which].scriptWitness.stack
         coin = GLOBAL_UTXOS[which]
         if code == 10:
-             return Element(n=txin.nSequence)
+             return Element(n=txin.nSequence.to_bytes(4, byteorder='little', signed=False))
         elif code == 11:
              return Element(n=verystable.core.messages.ser_uint256(txin.prevout.hash))
         elif code == 12:
-             return Element(n=txin.prevout.n)
+             return Element(n=txin.prevout.n.to_bytes(4, byteorder='little', signed=False))
         elif code == 13:
              return Element(n=txin.scriptSig)
         elif code == 14:
@@ -687,7 +716,7 @@ class op_tx:
              else:
                  return Element.nil
         elif code == 15:
-             return Element(n=coin.nValue)
+             return Element(n=coin.nValue.to_bytes(8, byteorder='little', signed=False))
         elif code == 16:
              return Element(n=coin.scriptPubKey)
         else:
@@ -696,13 +725,14 @@ class op_tx:
     def get_tx_output_info(self, code, which):
         out = GLOBAL_TX.vout[which]
         if code == 20:
-             return Element(n=out.nValue)
+             return Element(n=out.nValue.to_bytes(8, byteorder='little', signed=False))
         elif code == 21:
              return Element(n=out.scriptPubKey)
         else:
              return Element.nil
 
     def finish(self):
+        if self.r is None: return Element.nil
         return self.r
 
 FUNCS = [
@@ -724,7 +754,7 @@ FUNCS = [
 
   (0x0c, "=", op_eq),
 #  (0x0d, "<s", op_str_lt),
-  (0x0e, "len", op_len),
+  (0x0e, "strlen", op_strlen),
   (0x0f, "substr", op_substr),
   (0x10, "cat", op_cat),
 
@@ -898,11 +928,16 @@ def eval(baseenv, inst, debug):
 
    work = [(0, baseenv.bumpref(), None, inst.bumpref())] # stage, env, generator, remaining args to evaluate
 
+   if debug:
+       print(f'ENV={baseenv}')
+       print(f'GOAL={inst}')
+
    while work:
        if ALLOCATOR.over_limit():
            raise Exception("used too much memory")
 
        (what, env, gen, args) = work.pop()
+
 
        if debug:
            if env is baseenv:
@@ -1010,6 +1045,7 @@ class Rep:
         if debug is None: debug = self.debug
         ALLOCATOR.max = 0
         init_x = ALLOCATOR.x
+        #before_x = set(ALLOCATOR.alloced)
         p = SExpr.parse(program, many=False)
         try:
             r = eval(self.env, p, debug=debug)
@@ -1028,6 +1064,12 @@ class Rep:
             ## for BUG scenarios? need to count "execution load" somewhere
             ## as well
         p.deref()
+        #if ALLOCATOR.x != init_x:
+        #    print("=======================")
+        #    for el in ALLOCATOR.alloced:
+        #        if el not in before_x:
+        #            print(el.refs, el)
+        #    print("=======================")
         assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
 
 nil = Element.nil
@@ -1149,6 +1191,14 @@ rep("(hash256 (tx '5))")
 
 rep("(a '1 '1 '2 '3 '4 '5)")
 rep("(a '1 '1 '2 '3 '4 '5 '6 '7 '8 '9 '10)")
+
+# acc fn 0 n nil -> acc fn 1 (- n 1) (cat nil (fn 0))
+#  8  12 10 14 3
+rep = Rep(SExpr.parse("(a (i 14 '(a 8 8 12 (+ 10 '1) (- 14 '1) (cat 3 (a 12 10))) '3))"))
+rep("(bip342_txmsg)")
+
+# implement sighash_all, codesep_pos=-1, len(scriptPubKey) < 253
+rep("(a '(sha256 4 4 '0x00 6 3) (sha256 '\"TapSighash\") (cat '0x00 (tx '0) (tx '1) (sha256 (a 1 1 '(cat (tx (c '11 1)) (tx (c '12 1))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '15 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(a '(cat (strlen 1) 1) (tx (c '16 '0))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '10 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(cat (tx (c '20 1)) (a '(cat (strlen 1) 1) (tx (c '21 1)))) '0 (tx '2) 'nil)) (i (tx '7) '0x03 '0x01) (substr (cat (tx '4) '0x00000000) 'nil '4) (i (tx '7) (sha256 (a '(cat (strlen 1) 1) (tx '7))) 'nil)) (cat (tx '6) '0x00 '0xffffffff))")
 
 # levels:
 #   bytes/hex
