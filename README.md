@@ -71,10 +71,9 @@
  - `(c EL1 EL2 .. TAIL)` - "concat" -- returns a LIST where the first
    elements are EL1, EL2, etc and the remainder is TAIL. Note that `(c T)`
    just returns `T`. TAIL does not have to be a list itself.
- - `(add N1 N2 ..)` -- adds numbers, returns 0 if no numbers
- - `(mul N1 N2 ..)` -- multiplies numbers, returns 1 if no numbers
- - `(sub K N1 N2...)` -- subtracts numbers from `K`, `K` must be provided
- - `(div K N1 N2...)` -- integer division of `K`, `K` must be provided
+ - `(+ N1 N2 ..)` -- adds numbers, returns 0 if no numbers
+ - `(* N1 N2 ..)` -- multiplies numbers, returns 1 if no numbers
+ - `(- K N1 N2...)` -- subtracts numbers from `K`, `K` must be provided
 
 ### Example
 
