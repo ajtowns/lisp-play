@@ -664,6 +664,8 @@ class op_tx:
             return Element(n=len(GLOBAL_TX.vout))
         elif code == 4:
             return Element(n=GLOBAL_TX_INPUT_IDX)
+        elif code == 5:
+            return Element(n=GLOBAL_TX.serialize_without_witness())
         else:
             return Element.nil
 
@@ -764,7 +766,7 @@ FUNCS = [
 #  (0x52, "bn*", op_mul_bn),
 #  (0x53, "bn%", op_mod_bn),
 #  (0x54, "bn/%", op_divmod_bn), # (/ a b) => (h (/% a b))
-#  (0x55, "bn<", op_lt_bn),
+#  (0x55, "bn<", op_lt_bn), ### XXX want this one for PoW checks, probably
 #  (0x56, "bn<<", op_lshift_bn),
 #  (0x57, "bn>>", op_rshift_bn),
 #  (0x58, "bnlog2e42", op_log2e42_bn),
@@ -904,9 +906,9 @@ def eval(baseenv, inst, debug):
 
        if debug:
            if env is baseenv:
-               print(f'  depth={len(work)} ENV {args} {gen}')
+               print(f'  depth={len(work)} ENV {gen} {args}')
            else:
-               print(f'  depth={len(work)} <{env}> {args} {gen}')
+               print(f'  depth={len(work)} <{env}> {gen} {args}')
 
        assert isinstance(args, Element)
        result = None
@@ -919,10 +921,10 @@ def eval(baseenv, inst, debug):
                assert result is not None
        elif args.is_atom():
            if gen is None:
-               result = args.bumpref()
-               assert result is not None
+               n = args.as_int("env")
+               result = get_env(n, env).bumpref()
            else:
-               raise Exception("args terminated with non-list")
+               raise Exception("args terminated with non-nil atom")
        else:
            arg, args = steal_list(args)
 
@@ -958,9 +960,11 @@ def eval(baseenv, inst, debug):
 
        if result is None: continue
 
-       if debug: print(f'  fin --> {result}')
        # tail call (a)
-       if isinstance(result, list):
+       if not isinstance(result, list):
+           if debug: print(f'  fin --> {result}')
+       else:
+           if debug: print(f'  fin --> {" // ".join(map(str,result))}')
            if result[0] is not None:
                env.deref()
                env, args = result
@@ -1068,8 +1072,10 @@ rep("(< '1 '2)")
 rep("(< '2 '1)")
 
 # factorial
-rep = Rep(SExpr.parse("(a (i 2 '(* 2 (a 3 (c (- 2 '1) 3))) '1))"))
-rep("(a 1 (c '150 1))")
+# n=2, fn=3
+# `if 2 (a 3 (- 2 '1) 3)
+rep = Rep(SExpr.parse("(a (i 2 '(* 2 (a 3 (- 2 '1) 3)) ''1))"))
+rep("(a 1 '150 1)")
 #rep("(a 1 (c '15000 1))")
 
 # factorial but efficient
@@ -1138,6 +1144,11 @@ rep("(tx '10 '11 '12 '13 '14 '15 '16)")
 rep("(tx '(10 . 0) '(11 . 0) '(12 . 0) '(13 . 0) '(14 . 0) '(15 . 0) '(16 . 0))")
 rep("(tx '(20 . 0) '(21 . 0))")
 rep("(- (tx '15) (tx '(20 . 0)))")
+
+rep("(hash256 (tx '5))")
+
+rep("(a '1 '1 '2 '3 '4 '5)")
+rep("(a '1 '1 '2 '3 '4 '5 '6 '7 '8 '9 '10)")
 
 # levels:
 #   bytes/hex
