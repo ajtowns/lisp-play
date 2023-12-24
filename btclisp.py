@@ -658,7 +658,8 @@ class op_tx:
                 raise Exception(f"tx: {code} invalid input index")
             return self.get_tx_input_info(code, which)
         elif 20 <= code <= 29:
-            if which is None or which < 0 or which >= len(GLOBAL_TX.vout):
+            if which is None: which = GLOBAL_TX_INPUT_IDX
+            if which < 0 or which >= len(GLOBAL_TX.vout):
                 raise Exception(f"tx: {code} requires valid output index")
             return self.get_tx_output_info(code, which)
         else:
@@ -1199,6 +1200,13 @@ rep("(bip342_txmsg)")
 
 # implement sighash_all, codesep_pos=-1, len(scriptPubKey) < 253
 rep("(a '(sha256 4 4 '0x00 6 3) (sha256 '\"TapSighash\") (cat '0x00 (tx '0) (tx '1) (sha256 (a 1 1 '(cat (tx (c '11 1)) (tx (c '12 1))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '15 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(a '(cat (strlen 1) 1) (tx (c '16 '0))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '10 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(cat (tx (c '20 1)) (a '(cat (strlen 1) 1) (tx (c '21 1)))) '0 (tx '3) 'nil)) (i (tx '7) '0x03 '0x01) (substr (cat (tx '4) '0x00000000) 'nil '4) (i (tx '7) (sha256 (a '(cat (strlen 1) 1) (tx '7))) 'nil)) (cat (tx '6) '0x00 '0xffffffff))")
+
+print("----")
+for a in [0,1,2,3,4,5,6,7,10,11,12,13,14,15,16,20,21]:
+    rep("(tx '%d)" % (a,))
+
+rep("(cat '0x1122 '0x3344)")
+
 
 # levels:
 #   bytes/hex
