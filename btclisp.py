@@ -12,7 +12,7 @@ class Allocator:
     def __init__(self):
         self.x = 0
         self.max = 0
-        self.alloced = set()
+        #self.alloced = set()
         self.limit = 500000
 
     def over_limit(self):
@@ -23,10 +23,10 @@ class Allocator:
         self.x += n
         if self.x > self.max:
             self.max = self.x
-        self.alloced.add(w)
+        #self.alloced.add(w)
 
     def realloc(self, old, new, w):
-        assert w in self.alloced
+        #assert w in self.alloced
         self.x += (new - old)
         if self.x > self.max:
             self.max = self.x
@@ -34,79 +34,99 @@ class Allocator:
     def free(self, n, w):
         assert n >= 0
         self.x -= n
-        self.alloced.remove(w)
+        #self.alloced.remove(w)
 
 ALLOCATOR = Allocator()
 
+# kinds
+ATOM=255
+CONS=254
+REF=253
+ERROR=252
+
 class Element:
-    def __init__(self, *, n=None, u64=None, h=None, t=None):
-        if u64 is not None:
-            assert n is None
-            assert isinstance(u64, int)
-            assert u64 >= 0 and u64 <= 0xFFFF_FFFF_FFFF_FFFF
-            if u64 == 0:
-                n = b''
-            else:
-                bl = (u64.bit_length()+7)//8
-                n = u64.to_bytes(bl, byteorder='little', signed=False)
-            u64 = None
-
-        assert (n is None) != (h is None and t is None)
-        self.refs = 1
-
-        if isinstance(n, str):
-            n = n.encode('utf8')
-        elif isinstance(n, int):
-            if n == 0:
-                n = b''
-            else:
-                bl = (n.bit_length() + 8)//8
-                n = n.to_bytes(bl, byteorder='little', signed=True)
-        assert n is None or isinstance(n, bytes)
-
-        if h is not None:
-            assert isinstance(h, Element)
-            assert isinstance(t, Element)
-
-        self.n = n
-        self.h = h
-        self.t = t
-
-        ALLOCATOR.alloc(self.alloc_size(), self)
-
     re_printable = re.compile(b"^[a-z]+$")
     _nil = None
     _one = None
 
+    def __init__(self, kind, val1, val2=None):
+        ALLOCATOR.alloc(24, self)
+        assert 0 <= kind and kind < 256
+        self.kind = kind
+        self.refs = 1
+        self.val1 = val1
+        self.val2 = val2
+        if kind == ATOM:
+            assert (isinstance(val1, int) and 0 <= val2 <= 8) or (isinstance(val1, bytes) and val2 > 8)
+
+    def bumpref(self):
+        self.refs += 1
+        return self
+
     @classmethod
-    @property
-    def nil(cls):
+    def Nil(cls):
         if cls._nil is None:
-            cls._nil = cls(n=0)
+            cls._nil = cls(ATOM, 0, 0)
+            cls._nil.bumpref()
         return cls._nil.bumpref()
 
     @classmethod
-    def from_bool(cls, b):
-        if b:
-            if cls._one is None:
-                cls._one = cls(n=1)
-            return cls._one.bumpref()
-        else:
-            return cls.nil
+    def One(cls):
+        if cls._one is None:
+            cls._one = cls(ATOM, 1, 1)
+            cls._one.bumpref()
+        return cls._one.bumpref()
 
-    def alloc_size(self):
-        if self.n is None:
-            return 24 # two pointers plus type plus refcount
-        elif len(self.n) <= 8:
-            return 24 # 0-8 bytes, plus length, plus type plus refcount
-        else:
-            malloc = (len(self.n)+31)//16*16 # bitcoin MallocUssage()
-            return malloc + 24 # malloc, pointer, size, type, refcount
+    @classmethod
+    def Atom(cls, data, length=None):
+        if length is not None:
+            assert isinstance(data, int) and data > 0 and data <= 0xFFFF_FFFF_FFFF_FFFF
+            assert length >= (data.bit_length() + 7) // 8
+            assert length <= 8
+            if length == 0: return cls.Nil()
+            if length == 1 and data == 1: return cls.One()
+            return cls(ATOM, data, length)
+        if data == False or data == 0 or data is None or data == '' or data == b'':
+            return cls.Nil()
+        if data == True or data == 1 or data == '\x01' or data == b'\x01':
+            return cls.One()
 
-    def bumpref(self):
-        assert self.refs >= 1
-        self.refs += 1
-        return self
+        if isinstance(data, str):
+            data = data.encode('utf8')
+        elif isinstance(data, int):
+            assert data > 0 and data <= 0xFFFF_FFFF_FFFF_FFFF
+            bl = (data.bit_length() + 7)//8
+            return cls(ATOM, data, bl)
+        assert isinstance(data, bytes)
+        if len(data) <= 8:
+            i = int.from_bytes(data, byteorder='little', signed=False)
+            return cls(ATOM, i, len(data)) # in place
+        else:
+            ALLOCATOR.alloc(len(data), data) # pointer
+            return cls(ATOM, data, len(data))
+
+    @classmethod
+    def Cons(cls, left, right):
+        return cls(CONS, left, right)
+
+    @classmethod
+    def Ref(cls, ref):
+        return cls(REF, ref)
+
+    @classmethod
+    def Error(cls, msg):
+        return cls(ERROR, msg)
+
+    def dupe_atom(self):
+        assert self.kind == ATOM
+        v = self.val1
+        if isinstance(v, bytes):
+            v = v[:] # copy
+        else:
+            assert isinstance(v, int) # don't need to copy
+        replace = Element(ATOM, v, self.val2)
+        self.deref()
+        return replace
 
     def deref(self):
         s = [self]
@@ -115,79 +135,97 @@ class Element:
             assert f.refs >= 1, f"double-free of {f}"
             f.refs -= 1
             if f.refs == 0:
-                ALLOCATOR.free(f.alloc_size(), f)
-                if f.is_list():
-                    if f.h.is_atom():
-                        s.append(f.t)
-                        s.append(f.h)
+                if f.kind == ATOM:
+                    if f.val2 > 8: ALLOCATOR.free(f.val2, f.val1)
+                elif f.kind == CONS:
+                    if f.val2.kind == ATOM:
+                        s.append(f.val1)
+                        s.append(f.val2)
                     else:
-                        s.append(f.h)
-                        s.append(f.t)
+                        s.append(f.val2)
+                        s.append(f.val1)
+                else: # REF, ERROR, FN
+                     s.append(f.val1)
+                     assert not isinstance(f.val2, Element)
+                ALLOCATOR.free(24, f)
 
     def is_nil(self):
-        return self.n == b''
+        return self.kind == ATOM and self.val1 == 0 and self.val2 == 0
 
     def is_atom(self):
-        return self.n is not None
+        return self.kind == ATOM
 
-    def is_list(self):
-        return self.n is None
+    def is_cons(self):
+        return self.kind == CONS
+
+    def atom_as_bytes(self):
+        assert self.kind == ATOM
+        if self.val2 <= 8:
+            return self.val1.to_bytes(self.val2, byteorder='little', signed=False)
+        else:
+            return self.val1
+
+    def atom_as_u64(self):
+        assert self.kind == ATOM
+        if self.val2 <= 8:
+            assert isinstance(self.val1, int) and 0 <= self.val1 <= 0xFFFF_FFFF_FFFF_FFFF
+            return self.val1
+        else:
+            return int.from_bytes(self.val1[:8], byteorder='little', signed=False)
 
     def __str__(self):
         if self.is_nil():
             return "nil"
         elif self.is_atom():
-            if self.re_printable.match(self.n):
-                return '"%s"' % (self.n.decode('utf8'),)
-            elif len(self.n) == 1:
-                return str(self.as_int(None))
+            if self.val2 == 0 or (self.val1 != 0 and self.val2 == 1):
+                return str(self.val1)
             else:
-                return "0x%s" % (self.n.hex(),)
-        else:
+                v = self.atom_as_bytes()
+                if self.re_printable.match(v):
+                    return '"%s"' % (v.decode('utf8'),)
+                else:
+                    return "0x%s" % (v.hex(),)
+        elif self.is_cons():
             x = []
-            while self.t.is_list():
-                x.append(self.h)
-                self = self.t
-            x.append(self.h)
-            if not self.t.is_nil():
+            while self.val2.is_cons():
+                x.append(self.val1)
+                self = self.val2
+            x.append(self.val1)
+            if not self.val2.is_nil():
                 x.append(".")
-                x.append(self.t)
+                x.append(self.val2)
             return "(%s)" % " ".join(map(str, x))
-
-    def __repr__(self):
-        if self.is_nil():
-            return "Element(n=0)"
-        elif self.is_atom():
-            return "Element(n=0x%s)" % (self.n.hex())
+        elif self.is_ref():
+            return "REF(%s)" % (str(self.val1))
+        elif self.is_error():
+            return "ERR(%s)" % (str(self.val1))
         else:
-            return "Element(h=%r, t=%r)" % (self.h, self.t)
+            return "FN(%d,%s)" % (str(self.val1))
 
-    def as_int(self, fn):
-        if self.n is None:
-            raise Exception(f"{fn}: not a number: {self}")
-        return int.from_bytes(self.n, byteorder='little', signed=True)
+class Tree:
+    def __init__(self):
+        self.tree = []
 
-    def as_u64(self, fn="u64"):
-        if self.n is None:
-            raise Exception(f"{fn}: not a number: {self}")
-        return int.from_bytes(self.n[-8:], byteorder='little', signed=False)
+    def add(self, element):
+        i = 0
+        while i < len(self.tree):
+            if self.tree[i] is None:
+                self.tree[i] = element
+                return
+            element = Element.Cons(self.tree[i], element)
+            self.tree[i] = None
+            i += 1
+        self.tree.append(element)
 
-    @classmethod
-    def check_equal(cls, stk):
-        while stk:
-            (a, b) = stk.pop()
-            assert isinstance(a, cls) and isinstance(b, cls)
-            if a is b: continue
-            if a.is_atom() != b.is_atom(): return False
-            if a.is_atom():
-                if a.n != b.n: return False
-            elif a.t.is_atom() or b.t.is_atom() or a.t is b.t:
-                stk.append( (a.h, b.h) )
-                stk.append( (a.t, b.t) )
+    def resolve(self):
+        x = None
+        for el in self.tree:
+            if el is None: continue
+            if x is None:
+                x = el
             else:
-                stk.append( (a.t, b.t) )
-                stk.append( (a.h, b.h) )
-        return True
+                x = Element.Cons(el, x)
+        return x
 
 class Operator:
     state = 0
@@ -203,43 +241,22 @@ class Operator:
         # return the result
         raise Exception("BUG: finish unimplemented")
 
-def build_tree(tree, element):
-    i = 0
-    while i < len(tree):
-        if tree[i] is None:
-            tree[i] = element
-            return
-        element = Element(h=tree[i], t=element)
-        tree[i] = None
-        i += 1
-    tree.append(element)
-
-def resolve_tree(tree):
-    x = None
-    for el in tree:
-        if el is None: continue
-        if x is None:
-             x = el
-        else:
-             x = Element(h=el, t=x)
-    return x
-
 class op_a(Operator):
     # if given multiple arguments, builds them up into a tree,
     # biased to the left
     def __init__(self):
-        self.tree = []
+        self.tree = Tree()
     def argument(self, el):
         if self.state == 0:
             self.i = el
             self.env = None
             self.state = 1
         else:
-            build_tree(self.tree, el)
+            self.tree.add(el)
     def finish(self):
         if self.state == 0:
             raise Exception("a: requires at least one argument")
-        env = resolve_tree(self.tree)
+        env = self.tree.resolve()
         return [env, self.i]
 
 class op_x(Operator):
@@ -260,7 +277,7 @@ class op_i(Operator):
             if self.then:
                 self.result = el
             else:
-                self.result = Element.nil
+                self.result = Element.Atom(0)
                 el.deref()
         elif self.state == 2:
             if not self.then:
@@ -282,7 +299,7 @@ class op_softfork(Operator):
     def argument(self, el):
         el.deref()
     def finish(self):
-        return Element.from_bool(True)
+        return Element.Atom(True)
 
 class op_h(Operator):
     def argument(self, el):
@@ -290,7 +307,7 @@ class op_h(Operator):
             raise Exception("h: too many arguments")
         if el.is_atom():
             raise Exception("h: received non-list argument %s" % (el,))
-        self.r = el.h.bumpref()
+        self.r = el.val1.bumpref()
         el.deref()
         self.state += 1
 
@@ -305,7 +322,7 @@ class op_t(Operator):
             raise Exception("t: too many arguments")
         if el.is_atom():
             raise Exception("t: received non-list argument %s" % (el,))
-        self.r = el.t.bumpref()
+        self.r = el.val2.bumpref()
         el.deref()
         self.state += 1
 
@@ -318,14 +335,14 @@ class op_l(Operator):
     def argument(self, el):
         if self.state > 0:
             raise Exception("l: too many arguments")
-        self.r = el.is_list()
+        self.r = el.is_cons()
         el.deref()
         self.state += 1
 
     def finish(self):
         if self.state == 0:
             raise Exception("l: must provide list argument")
-        return Element.from_bool(self.r)
+        return Element.Atom(self.r)
 
 class op_c(Operator):
     # (c head tail), (c h1 h2 h3 tail)
@@ -339,14 +356,14 @@ class op_c(Operator):
         if self.res is None:
             self.res = el
         elif self.last_cons is None:
-            self.res = self.last_cons = Element(h=self.res, t=el)
+            self.res = self.last_cons = Element.Cons(self.res, el)
         else:
-            self.last_cons.t = Element(h=self.last_cons.t, t=el)
-            self.last_cons = self.last_cons.t
+            self.last_cons.val2 = Element.Cons(self.last_cons.val2, el)
+            self.last_cons = self.last_cons.val2
 
     def finish(self):
         if self.res is None:
-            return Element.nil
+            return Element.Atom(0)
         return self.res
 
 class op_nand(Operator):
@@ -358,7 +375,7 @@ class op_nand(Operator):
             self.b = True
         el.deref()
     def finish(self):
-        return Element.from_bool(self.b)
+        return Element.Atom(self.b)
 
 class op_and(Operator):
     # aka are all true?
@@ -369,7 +386,7 @@ class op_and(Operator):
             self.b = False
         el.deref()
     def finish(self):
-        return Element.from_bool(self.b)
+        return Element.Atom(self.b)
 
 class op_or(Operator):
     # aka are any true?
@@ -380,7 +397,7 @@ class op_or(Operator):
             self.b = True
         el.deref()
     def finish(self):
-        return Element.from_bool(self.b)
+        return Element.Atom(self.b)
 
 class op_eq(Operator):
     def __init__(self):
@@ -401,7 +418,7 @@ class op_eq(Operator):
     def finish(self):
         if self.h is not None:
             self.h.deref()
-        return Element.from_bool(self.ok)
+        return Element.Atom(self.ok)
 
 class op_strlen(Operator):
    def __init__(self):
@@ -409,10 +426,10 @@ class op_strlen(Operator):
    def argument(self, el):
         if not el.is_atom():
             raise Exception(f"len: not an atom: {el}")
-        self.v += len(el.n)
+        self.v += el.val2
         el.deref()
    def finish(self):
-        return Element(n=self.v)
+        return Element.Atom(self.v)
 
 class op_cat(Operator):
     def __init__(self):
@@ -422,19 +439,25 @@ class op_cat(Operator):
             raise Exception(f"cat: argument not an atom: {el}")
         if self.build is None:
             self.build = el
-        elif self.build.refs == 1:
-            old_size = self.build.alloc_size()
-            self.build.n += el.n
-            new_size = self.build.alloc_size()
-            ALLOCATOR.realloc(old_size, new_size, self.build)
-            el.deref()
         else:
-            b2 = Element(n=(self.build.n + el.n))
-            self.build.deref()
+            if self.build.refs > 1:
+                self.build = self.build.dupe_atom()
+
+            new_size = self.build.val2 + el.val2
+            if new_size <= 8:
+                self.build.val1 += (el.val1 << (8*self.build.val2))
+            else:
+                if self.build.val2 <= 8:
+                    self.build.val1 = self.build.atom_as_bytes()
+                    ALLOCATOR.alloc(new_size, self.build.val1)
+                else:
+                    ALLOCATOR.realloc(self.build.val2, new_size, self.build.val1)
+                self.build.val1 += el.atom_as_bytes()
+            self.build.val2 = new_size
             el.deref()
-            self.build = b2
+
     def finish(self):
-        if self.build is None: return Element.nil
+        if self.build is None: return Element.Atom(0)
         return self.build
 
 class op_substr(Operator):
@@ -448,22 +471,27 @@ class op_substr(Operator):
                 raise Exception("substr: must be atom")
             self.el = el
         elif self.start is None:
-            self.start = el.as_u64("substr")
+            self.start = el.atom_as_u64()
             el.deref()
         elif self.end is None:
-            self.end = el.as_u64("substr")
+            self.end = el.atom_as_u64()
             el.deref()
         else:
             raise Exception("substr: too many arguments")
     def finish(self):
-        if self.el is None: return Element.nil
+        if self.el is None: return Element.Atom(0)
         if self.start is None: return self.el
         if self.start == 0:
-             if self.end is None: return self.el
-             if self.end >= len(self.el.n): return self.el
+            if self.end is None: return self.el
+            if self.end >= self.el.val2: return self.el
         if self.end is None:
-            self.end = len(self.el.n)
-        s = Element(n=self.el.n[self.start:self.end])
+            self.end = self.el.val2
+        if self.el.val2 <= 8:
+            m = 0xFFFF_FFFF_FFFF_FFFF
+            n = self.el.val1
+            s = Element.Atom(((m^(m<<(self.end*8))) & n) >> (self.start*8), self.end-self.start)
+        else:
+            s = Element.Atom(self.el.val1[self.start:self.end])
         self.el.deref()
         return s
 
@@ -472,31 +500,31 @@ class op_add_u64(Operator):
         self.i = 0
 
     def argument(self, el):
-        self.i += el.as_u64("add")
+        self.i += el.atom_as_u64()
         self.i %= 0x1_0000_0000_0000_0000
         el.deref()
 
     def finish(self):
-        return Element(u64=self.i)
+        return Element.Atom(self.i)
 
 class op_mul_u64(Operator):
     def __init__(self):
         self.i = 1
 
     def argument(self, el):
-        self.i *= el.as_u64("mul")
+        self.i *= el.atom_as_u64()
         self.i %= 0x1_0000_0000_0000_0000
         el.deref()
 
     def finish(self):
-        return Element(u64=self.i)
+        return Element.Atom(self.i)
 
 class op_sub_u64(Operator):
     def __init__(self):
         self.i = None
 
     def argument(self, el):
-        n = el.as_u64("sub")
+        n = el.atom_as_u64()
         el.deref()
         if self.i is None:
             self.i = n
@@ -507,7 +535,7 @@ class op_sub_u64(Operator):
     def finish(self):
         if self.i is None:
             raise Exception("sub: missing arguments")
-        return Element(u64=self.i)
+        return Element.Atom(self.i)
 
 # op_mod / op_divmod
 class op_div_u64(Operator):
@@ -515,7 +543,7 @@ class op_div_u64(Operator):
         self.i = None
 
     def argument(self, el):
-        n = el.as_u64("div")
+        n = el.atom_as_u64()
         el.deref()
         if self.i is None:
             self.i = n
@@ -528,14 +556,14 @@ class op_div_u64(Operator):
     def finish(self):
         if self.i is None:
             raise Exception("div: missing arguments")
-        return Element(u64=self.i)
+        return Element.Atom(self.i)
 
 class op_lt_u64(Operator):
     def __init__(self):
         self.i = -1
 
     def argument(self, el):
-        k = el.as_u64("lt")
+        k = el.atom_as_u64()
         if self.i is not None and self.i < k:
             self.i = k
         else:
@@ -543,32 +571,32 @@ class op_lt_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Element.from_bool(self.i is not None)
+        return Element.Atom(self.i is not None)
 
 class op_sha256(Operator):
     def __init__(self):
         self.st = hashlib.sha256()
 
     def argument(self, el):
-        if el.n is None:
+        if not el.is_atom():
             raise Exception("sha256: cannot hash list")
-        self.st.update(el.n)
+        self.st.update(el.atom_as_bytes())
         el.deref()
 
     def finish(self):
-        return Element(n=self.st.digest())
+        return Element.Atom(self.st.digest())
 
 class op_hash160(op_sha256):
     def finish(self):
         x = hashlib.new("ripemd160")
         x.update(self.st.digest())
-        return Element(n=x.digest())
+        return Element.Atom(x.digest())
 
 class op_hash256(op_sha256):
     def finish(self):
         x = hashlib.sha256()
         x.update(self.st.digest())
-        return Element(n=x.digest())
+        return Element.Atom(x.digest())
 
 class op_bip340_verify(Operator):
     def __init__(self):
@@ -586,14 +614,14 @@ class op_bip340_verify(Operator):
         if len(self.args) != 3:
             raise Exception("bip340_verify: too few arguments")
         pk, m, sig = self.args
-        if len(pk.n) != 32 or len(m.n) != 32 or len(sig.n) != 64:
+        if pk.val2 != 32 or m.val2 != 32 or sig.val2 != 64:
             r = False
         else:
-            r = verystable.core.key.verify_schnorr(key=pk.n, sig=sig.n, msg=m.n)
+            r = verystable.core.key.verify_schnorr(key=pk.val1, sig=sig.val1, msg=m.val1)
         pk.deref()
         m.deref()
         sig.deref()
-        return Element.from_bool(r)
+        return Element.Atom(r)
 
 class op_bip342_txmsg:
     def __init__(self):
@@ -602,11 +630,11 @@ class op_bip342_txmsg:
     def argument(self, el):
         if self.sighash is not None:
             raise Exception("bip342_txmsg: too many arguments")
-        if not el.is_atom() or len(el.n) > 1:
+        if not el.is_atom() or el.val2 > 1:
             raise Exception("bip342_txmsg: expects a single sighash byte")
-        if el.n != b'' and el.n[0] not in [0x01, 0x02, 0x03, 0x81, 0x82, 0x83]:
+        if el.val2 == 1 and el.val1 not in [0x01, 0x02, 0x03, 0x81, 0x82, 0x83]:
             raise Exception("bip342_txmsg: unknown sighash byte")
-        self.sighash = el.as_u64()
+        self.sighash = el.atom_as_u64()
         el.deref()
 
     def finish(self):
@@ -617,7 +645,7 @@ class op_bip342_txmsg:
             if len(w) > 0 and w[-1][0] == 0x50:
                 annex = w[-1]
         r = verystable.core.script.TaprootSignatureHash(txTo=GLOBAL_TX, spent_utxos=GLOBAL_UTXOS, hash_type=self.sighash, input_index=GLOBAL_TX_INPUT_IDX, scriptpath=True, annex=annex, script=GLOBAL_TX_SCRIPT)
-        return Element(n=r)
+        return Element.Atom(r)
 
 class op_tx:
     def __init__(self):
@@ -630,23 +658,26 @@ class op_tx:
         # or a pair of what info is requested, plus what input/output idx
         #  we want info about
         if el.is_atom():
-            code = el.as_u64()
+            code = el.atom_as_u64()
             which = None
-        else:
-            if not el.h.is_atom() or not el.t.is_atom():
+        elif el.is_cons():
+            if not el.val1.is_atom() or not el.val2.is_atom():
                 raise Exception("tx: expects atoms or pairs of atoms")
-            code = el.h.as_u64()
-            which = el.t.as_u64()
+            code = el.val1.atom_as_u64()
+            which = el.val2.atom_as_u64()
         el.deref()
         result = self.get_tx_info(code, which)
         if self.r is None:
             self.r = result
         elif self.last_cons is None:
-            self.last_cons = Element(h=result, t=Element.nil)
-            self.r = Element(h=self.r, t=self.last_cons)
+            self.last_cons = Element.Cons(result, Element.Atom(0))
+            self.r = Element.Cons(self.r, self.last_cons)
         else:
-            self.last_cons.t = Element(h=result, t=self.last_cons.t)
-            self.last_cons = self.last_cons.t
+            assert self.last_cons.is_cons()
+            assert self.last_cons.val2.is_atom()
+            assert self.last_cons.val2.val2 == 0
+            self.last_cons.val2 = Element.Cons(result, self.last_cons.val2)
+            self.last_cons = self.last_cons.val2
 
     def get_tx_info(self, code, which):
         if 0 <= code <= 9:
@@ -667,17 +698,17 @@ class op_tx:
 
     def get_tx_global_info(self, code):
         if code == 0:
-            return Element(n=GLOBAL_TX.nVersion)
+            return Element.Atom(GLOBAL_TX.nVersion, 4)
         elif code == 1:
-            return Element(n=GLOBAL_TX.nLockTime)
+            return Element.Atom(GLOBAL_TX.nLockTime, 4)
         elif code == 2:
-            return Element(n=len(GLOBAL_TX.vin))
+            return Element.Atom(len(GLOBAL_TX.vin))
         elif code == 3:
-            return Element(n=len(GLOBAL_TX.vout))
+            return Element.Atom(len(GLOBAL_TX.vout))
         elif code == 4:
-            return Element(n=GLOBAL_TX_INPUT_IDX)
+            return Element.Atom(GLOBAL_TX_INPUT_IDX)
         elif code == 5:
-            return Element(n=GLOBAL_TX.serialize_without_witness())
+            return Element.Atom(GLOBAL_TX.serialize_without_witness())
         elif code == 6:
             wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
             n = len(wit) - 1
@@ -686,54 +717,54 @@ class op_tx:
                 v = (wit[n][0] & 0xFE)
                 s = wit[n-1]
                 h = verystable.core.key.TaggedHash("TapLeaf", bytes([v]) + verystable.core.messages.ser_string(s))
-                return Element(n=h)
+                return Element.Atom(h)
             else:
-                return Element.nil
+                return Element.Atom(0)
 
         elif code == 7:
             wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
             if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
-                return Element(n=wit[-1])
+                return Element.Atom(wit[-1])
             else:
-                return Element.nil
+                return Element.Atom(0)
         else:
-            return Element.nil
+            return Element.Atom(0)
 
     def get_tx_input_info(self, code, which):
         txin = GLOBAL_TX.vin[which]
         wit = GLOBAL_TX.wit.vtxinwit[which].scriptWitness.stack
         coin = GLOBAL_UTXOS[which]
         if code == 10:
-             return Element(n=txin.nSequence.to_bytes(4, byteorder='little', signed=False))
+             return Element.Atom(txin.nSequence, 4)
         elif code == 11:
-             return Element(n=verystable.core.messages.ser_uint256(txin.prevout.hash))
+             return Element.Atom(verystable.core.messages.ser_uint256(txin.prevout.hash))
         elif code == 12:
-             return Element(n=txin.prevout.n.to_bytes(4, byteorder='little', signed=False))
+             return Element.Atom(txin.prevout.n, 4)
         elif code == 13:
-             return Element(n=txin.scriptSig)
+             return Element.Atom(txin.scriptSig)
         elif code == 14:
              if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
-                 return Element(n=wit[-1])
+                 return Element.Atom(wit[-1])
              else:
-                 return Element.nil
+                 return Element.Atom(0)
         elif code == 15:
-             return Element(n=coin.nValue.to_bytes(8, byteorder='little', signed=False))
+             return Element.Atom(coin.nValue, 8)
         elif code == 16:
-             return Element(n=coin.scriptPubKey)
+             return Element.Atom(coin.scriptPubKey)
         else:
-             return Element.nil
+             return Element.Atom(0)
 
     def get_tx_output_info(self, code, which):
         out = GLOBAL_TX.vout[which]
         if code == 20:
-             return Element(n=out.nValue.to_bytes(8, byteorder='little', signed=False))
+             return Element.Atom(out.nValue, 8)
         elif code == 21:
-             return Element(n=out.scriptPubKey)
+             return Element.Atom(out.scriptPubKey)
         else:
-             return Element.nil
+             return Element.Atom(0)
 
     def finish(self):
-        if self.r is None: return Element.nil
+        if self.r is None: return Element.Atom(0)
         return self.r
 
 FUNCS = [
@@ -774,7 +805,11 @@ FUNCS = [
   (0x1c, "<", op_lt_u64),
 #  (0x1d, "<<", op_lshift_u64),
 #  (0x1e, ">>", op_rshift_u64),
+
 #  (0x1f, "log2e42", op_log2e42_u64),
+      ## allow both of these to apply to arbitrary atoms?
+      ## (500kB atoms are in range for log, < is just little
+      ##  endian with special handling for 0?)
 
 #  (0x20, "rd_csn", op_csn_read),  # convert CScriptNum to atom
 #  (0x21, "wr_csn", op_csn_write), # convert atom to CScriptNum
@@ -791,16 +826,6 @@ FUNCS = [
 
   (0x2b, "tx", op_tx),
   (0x2c, "bip342_txmsg", op_bip342_txmsg),
-
-#  (0x50, "bn+", op_add_bn),
-#  (0x51, "bn-", op_sub_bn),
-#  (0x52, "bn*", op_mul_bn),
-#  (0x53, "bn%", op_mod_bn),
-#  (0x54, "bn/%", op_divmod_bn), # (/ a b) => (h (/% a b))
-#  (0x55, "bn<", op_lt_bn), ### XXX want this one for PoW checks, probably
-#  (0x56, "bn<<", op_lshift_bn),
-#  (0x57, "bn>>", op_rshift_bn),
-#  (0x58, "bnlog2e42", op_log2e42_bn),
 ]
 
 def _Do_FUNCS():
@@ -826,10 +851,10 @@ class SExpr:
             t = l[-1]
             l = l[:-2]
         else:
-            t = Element.nil
+            t = Element.Atom(0)
         assert None not in l
         for h in reversed(l):
-            t = Element(h=h, t=t)
+            t = Element.Cons(h, t)
         return t
 
     @classmethod
@@ -879,16 +904,16 @@ class SExpr:
                 else:
                     raise Exception("unparsable/unknown atom %r" % (a,))
                 if a == b'' or a == 0:
-                    parstack[-1].append(Element.nil)
+                    parstack[-1].append(Element.Atom(0))
                 else:
-                    parstack[-1].append(Element(n=a))
+                    parstack[-1].append(Element.Atom(a))
             else:
                 raise Exception("BUG: unhandled match")
 
             while len(parstack[-1]) > 1 and parstack[-1][0] == "tick":
                 assert len(parstack[-1]) == 2
                 q = parstack.pop()
-                parstack[-1].append(Element(h=Element.nil, t=q[1]))
+                parstack[-1].append(Element.Cons(Element.Atom(0), q[1]))
 
             if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
                 raise Exception("cannot have multiple elements after . in list")
@@ -908,8 +933,8 @@ class SExpr:
             return cls.list_to_element(parstack[0])
 
 def steal_list(l):
-    assert isinstance(l, Element) and l.is_list()
-    h, t = l.h.bumpref(), l.t.bumpref()
+    assert isinstance(l, Element) and l.is_cons()
+    h, t = l.val1.bumpref(), l.val2.bumpref()
     l.deref()
     return h, t
 
@@ -917,10 +942,10 @@ def get_env(n, env):
     if n < 0:
         raise Exception("env argument out of range: %s" % (n,))
     while n > 1:
-        if not env.is_list():
+        if not env.is_cons():
             raise Exception("invalid env path %d" % (n,))
         n, x = divmod(n, 2)
-        env = env.t if x else env.h
+        env = env.val2 if x else env.val1
     return env
 
 def eval(baseenv, inst, debug):
@@ -939,12 +964,14 @@ def eval(baseenv, inst, debug):
 
        (what, env, gen, args) = work.pop()
 
-
        if debug:
            if env is baseenv:
                print(f'  depth={len(work)} ENV {gen} {args}')
            else:
                print(f'  depth={len(work)} <{env}> {gen} {args}')
+           for xd, (xw, xe, xg, xa) in enumerate(work):
+               if xe is baseenv: xe = "ENV"
+               print(f' &depth={xd} <{xe}> {xg} {xa}')
 
        assert isinstance(args, Element)
        result = None
@@ -957,7 +984,7 @@ def eval(baseenv, inst, debug):
                assert result is not None
        elif args.is_atom():
            if gen is None:
-               n = args.as_int("env")
+               n = args.atom_as_u64()
                result = get_env(n, env).bumpref()
            else:
                raise Exception("args terminated with non-nil atom")
@@ -965,20 +992,22 @@ def eval(baseenv, inst, debug):
            arg, args = steal_list(args)
 
            if gen is None:
-               if arg.is_list():
+               if arg.is_cons():
                    work.append( (what, env, gen, args) )
                    work.append( (1, env.bumpref(), None, arg) )
                else:
-                   opcode = arg.n
+                   opcode = arg.atom_as_u64()
+                   huh = arg.val1,arg.val2
                    arg.deref()
-                   if len(opcode) == 0:
+                   if opcode == 0:
                        # nil / q
                        result = args.bumpref()
                        assert result is not None
                    else:
-                       o = Op_FUNCS.get(opcode[0], None) if len(opcode) == 1 else None
+                       o = Op_FUNCS.get(opcode, None)
                        if o is None:
-                           raise Exception("unknown operator: %s" % (opcode.hex(),))
+                           raise Exception("unknown operator: %x %s" % (opcode,huh))
+                       if debug: print("DOING OP %s" % (o.__name__))
                        gen = o()
                        work.append( (what, env, gen, args) )
            else:
@@ -986,7 +1015,7 @@ def eval(baseenv, inst, debug):
                    if arg.is_nil():
                        gen.argument(arg)
                    else:
-                       n = arg.as_int("env")
+                       n = arg.atom_as_u64()
                        arg.deref()
                        gen.argument(get_env(n, env).bumpref())
                    work.append( (what, env, gen, args) )
@@ -1019,14 +1048,14 @@ def eval(baseenv, inst, debug):
            return result
 
        assert len(work) > 0
-       if debug: print(f"RES {what} {result}")
+       if debug: print(f"RES {what} {result} {gen}")
        if what == 1:
            # recursion to decide instruction
-           if result.is_list():
+           if result.is_cons():
                raise Exception("non-atomic instruction after evaluation: %s" % (result,))
            (_w, _e, _g, _a) = work.pop()
            assert _g is None
-           work.append( (_w, _e, _g, Element(h=result, t=_a)) )
+           work.append( (_w, _e, _g, Element.Cons(result, _a)) )
            continue
        elif what == 2:
            # recursion to resolve argument
@@ -1044,6 +1073,7 @@ class Rep:
 
     def __call__(self, program, debug=None):
         if debug is None: debug = self.debug
+        if debug: print("PROGRAM: %s" % (program,))
         ALLOCATOR.max = 0
         init_x = ALLOCATOR.x
         #before_x = set(ALLOCATOR.alloced)
@@ -1073,11 +1103,12 @@ class Rep:
         #    print("=======================")
         assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
 
-nil = Element.nil
-one = Element.from_bool(True)
+nil = Element.Atom(0)
+one = Element.Atom(1)
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
 print("Env: %s" % (rep.env))
+
 rep("1")
 rep("(q . 1)")
 rep("(q . q)")
