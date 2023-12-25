@@ -53,14 +53,14 @@ class Element:
         ALLOCATOR.alloc(24, self)
         assert 0 <= kind and kind < 256
         self.kind = kind
-        self.refs = 1
+        self._refs = 1
         self.val1 = val1
         self.val2 = val2
         if kind == ATOM:
             assert (isinstance(val1, int) and 0 <= val2 <= 8) or (isinstance(val1, bytes) and val2 > 8)
 
     def bumpref(self):
-        self.refs += 1
+        self._refs += 1
         return self
 
     @classmethod
@@ -128,24 +128,32 @@ class Element:
         self.deref()
         return replace
 
+    @classmethod
+    def toderef(cls, stk, *els):
+        for el in els:
+            if el._refs > 1:
+                el._refs -= 1
+            else:
+                stk.append(el)
+
     def deref(self):
         s = [self]
+        # XXX should consider having this be a cons to keep
+        # constant memory usage?
         while s:
             f = s.pop()
-            assert f.refs >= 1, f"double-free of {f}"
-            f.refs -= 1
-            if f.refs == 0:
+            assert f._refs >= 1, f"double-free of {f}"
+            f._refs -= 1
+            if f._refs == 0:
                 if f.kind == ATOM:
                     if f.val2 > 8: ALLOCATOR.free(f.val2, f.val1)
                 elif f.kind == CONS:
                     if f.val2.kind == ATOM:
-                        s.append(f.val1)
-                        s.append(f.val2)
+                        self.toderef(s, f.val1, f.val2)
                     else:
-                        s.append(f.val2)
-                        s.append(f.val1)
+                        self.toderef(s, f.val2, f.val1)
                 else: # REF, ERROR, FN
-                     s.append(f.val1)
+                     self.toderef(s, f.val1)
                      assert not isinstance(f.val2, Element)
                 ALLOCATOR.free(24, f)
 
@@ -440,7 +448,7 @@ class op_cat(Operator):
         if self.build is None:
             self.build = el
         else:
-            if self.build.refs > 1:
+            if self.build._refs > 1:
                 self.build = self.build.dupe_atom()
 
             new_size = self.build.val2 + el.val2
@@ -1099,7 +1107,7 @@ class Rep:
         #    print("=======================")
         #    for el in ALLOCATOR.alloced:
         #        if el not in before_x:
-        #            print(el.refs, el)
+        #            print(el._refs, el)
         #    print("=======================")
         assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
 
