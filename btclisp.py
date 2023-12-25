@@ -117,6 +117,10 @@ class Element:
     def Error(cls, msg):
         return cls(ERROR, msg)
 
+    @classmethod
+    def Func(cls, funcid):
+        assert isinstance(funcid, int) and 0 <= funcid < min(ATOM,CONS,ERROR,REF)
+
     def dupe_atom(self):
         assert self.kind == ATOM
         v = self.val1
