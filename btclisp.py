@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 import re
 import hashlib
 import verystable.core.key
@@ -12,21 +13,35 @@ class Allocator:
     def __init__(self):
         self.x = 0
         self.max = 0
-        #self.alloced = set()
+        self.alloced = dict()
         self.limit = 500000
+        self.effort = 0
+        self.effort_limit = 100000 #*10000000
+        self.counter = 0
+
+    def reset_work(self):
+        self.effort = 0
+    def record_work(self, effort):
+        self.effort += effort
 
     def over_limit(self):
-        return self.max > self.limit
+        return self.max > self.limit or self.effort > self.effort_limit
 
     def alloc(self, n, w):
         assert n >= 0
         self.x += n
         if self.x > self.max:
             self.max = self.x
-        #self.alloced.add(w)
+        lines = []
+        frame = sys._getframe(1)
+        while frame.f_back is not None:
+            lines.append(frame.f_lineno)
+            frame = frame.f_back
+        self.counter += 1
+        self.alloced[w] = (self.counter, lines)
 
     def realloc(self, old, new, w):
-        #assert w in self.alloced
+        assert w in self.alloced
         self.x += (new - old)
         if self.x > self.max:
             self.max = self.x
@@ -34,34 +49,118 @@ class Allocator:
     def free(self, n, w):
         assert n >= 0
         self.x -= n
-        #self.alloced.remove(w)
+        del self.alloced[w]
+
+class Function:
+    def __init__(self):
+        pass # setup internal state
+
+    def resolve(self, el):
+        el.set_error("resolve unimplemented")
+        return None
+
+    def set_error_open_list(self, el):
+        el.set_error("program specified as open list (non-nil terminator)")
 
 ALLOCATOR = Allocator()
 
 # kinds
 ATOM=255
 CONS=254
-REF=253
-ERROR=252
+ERROR=253
+REF=252
+FUNC=251
 
 class Element:
-    re_printable = re.compile(b"^[a-z]+$")
+    re_printable = re.compile(b"^[a-zA-Z0-9 _(),:-]+$")
     _nil = None
     _one = None
 
     def __init__(self, kind, val1, val2=None):
         ALLOCATOR.alloc(24, self)
-        assert 0 <= kind and kind < 256
-        self.kind = kind
         self._refs = 1
+        self.set(kind, val1, val2)
+
+    def alloc_size(self):
+        if self.kind != ATOM or self.val2 <= 8: return 24
+        return 24 + 16 + ((self.val2+15) // 16) * 16
+
+    def set(self, kind, val1, val2):
+        ## previous contents should already have been derefed
+        if kind == ATOM:
+            assert isinstance(val2, int)
+            assert (isinstance(val1, int) and 0 <= val2 <= 8) or (isinstance(val1, bytes) and val2 > 8 and val2 == len(val1))
+        elif kind == CONS:
+            assert isinstance(val1, Element) and isinstance(val2, Element)
+        elif kind == ERROR:
+            assert isinstance(val1, Element) and val2 is None
+            assert val1.kind != ATOM or val1.val2 > 8
+        elif kind == REF:
+            assert isinstance(val1, Element) and val2 is None
+        elif kind == FUNC:
+            assert isinstance(val1, Element) and val2 is not None
+        else:
+            assert False, "invalid kind"
+
+        self.kind = kind
         self.val1 = val1
         self.val2 = val2
-        if kind == ATOM:
-            assert (isinstance(val1, int) and 0 <= val2 <= 8) or (isinstance(val1, bytes) and val2 > 8)
+        if kind == ATOM and val2 > 8:
+            ALLOCATOR.realloc(24, self.alloc_size(), self)
 
     def bumpref(self):
         self._refs += 1
         return self
+
+    @classmethod
+    def deref_stack(cls, stk):
+        while stk:
+            f = stk.pop()
+            assert f._refs >= 1, f"double-free of {f}"
+            f._refs -= 1
+            if f._refs == 0:
+                f.deref_parts(stk)
+                ALLOCATOR.free(f.alloc_size(), f)
+
+    @classmethod
+    def toderef(cls, stk, *els):
+        for el in els:
+            if el._refs > 1:
+                el._refs -= 1
+            else:
+                stk.append(el)
+        return stk
+
+    def deref_parts(self, stk):
+        if self.kind == ATOM:
+            pass
+        elif self.kind == CONS:
+            if self.val2.kind == ATOM:
+                self.toderef(stk, self.val1, self.val2)
+            else:
+                self.toderef(stk, self.val2, self.val1)
+        else: # REF, ERROR, FN
+             self.toderef(stk, self.val1)
+             assert not isinstance(self.val2, Element)
+        return stk
+
+    def deref(self):
+        self.deref_stack(self.toderef([], self))
+
+    def replace(self, kind, val1, val2=None):
+        assert self.kind == REF or self.kind == FUNC
+        self.deref_stack(self.deref_parts([]))
+        if self.kind == ATOM and self.val2 > 8:
+            ALLOCATOR.realloc(self.alloc_size(), 24, self)
+        self.set(kind, val1, val2)
+
+    def set_error(self, msg):
+        if isinstance(msg, (str, bytes)):
+            msg = Element.Atom(msg)
+        self.replace(ERROR, msg)
+
+    def is_nil(self):
+        return self.kind == ATOM and self.val1 == 0 and self.val2 == 0
 
     @classmethod
     def Nil(cls):
@@ -102,7 +201,6 @@ class Element:
             i = int.from_bytes(data, byteorder='little', signed=False)
             return cls(ATOM, i, len(data)) # in place
         else:
-            ALLOCATOR.alloc(len(data), data) # pointer
             return cls(ATOM, data, len(data))
 
     @classmethod
@@ -115,11 +213,14 @@ class Element:
 
     @classmethod
     def Error(cls, msg):
+        if isinstance(msg, (str, bytes)):
+            msg = cls.Atom(msg)
         return cls(ERROR, msg)
 
     @classmethod
-    def Func(cls, funcid):
-        assert isinstance(funcid, int) and 0 <= funcid < min(ATOM,CONS,ERROR,REF)
+    def Func(cls, args, fn):
+        assert isinstance(fn, Function)
+        return cls(FUNC, args, fn)
 
     def dupe_atom(self):
         assert self.kind == ATOM
@@ -132,43 +233,21 @@ class Element:
         self.deref()
         return replace
 
-    @classmethod
-    def toderef(cls, stk, *els):
-        for el in els:
-            if el._refs > 1:
-                el._refs -= 1
-            else:
-                stk.append(el)
-
-    def deref(self):
-        s = [self]
-        # XXX should consider having this be a cons to keep
-        # constant memory usage?
-        while s:
-            f = s.pop()
-            assert f._refs >= 1, f"double-free of {f}"
-            f._refs -= 1
-            if f._refs == 0:
-                if f.kind == ATOM:
-                    if f.val2 > 8: ALLOCATOR.free(f.val2, f.val1)
-                elif f.kind == CONS:
-                    if f.val2.kind == ATOM:
-                        self.toderef(s, f.val1, f.val2)
-                    else:
-                        self.toderef(s, f.val2, f.val1)
-                else: # REF, ERROR, FN
-                     self.toderef(s, f.val1)
-                     assert not isinstance(f.val2, Element)
-                ALLOCATOR.free(24, f)
-
-    def is_nil(self):
-        return self.kind == ATOM and self.val1 == 0 and self.val2 == 0
-
     def is_atom(self):
         return self.kind == ATOM
 
     def is_cons(self):
         return self.kind == CONS
+
+    def is_error(self):
+        return self.kind == ERROR
+
+    def get_complete(self):
+        if self.kind == REF:
+            self = self.val1
+        if self.kind in [ATOM,CONS,ERROR]:
+            return self
+        return None
 
     def atom_as_bytes(self):
         assert self.kind == ATOM
@@ -176,6 +255,12 @@ class Element:
             return self.val1.to_bytes(self.val2, byteorder='little', signed=False)
         else:
             return self.val1
+
+    def atom_as_u64_short(self):
+        assert self.kind == ATOM
+        if self.val2 > 8: return None
+        if self.val2 != (self.val1.bit_length() + 7)//8: return None
+        return self.val1
 
     def atom_as_u64(self):
         assert self.kind == ATOM
@@ -185,7 +270,14 @@ class Element:
         else:
             return int.from_bytes(self.val1[:8], byteorder='little', signed=False)
 
+    def __repr__(self): return f"El<{self}>"
     def __str__(self):
+        if self.kind == REF:
+            n = 0
+            while self.kind == REF:
+                self = self.val1
+                n += 1
+            return "*"*n + str(self)
         if self.is_nil():
             return "nil"
         elif self.is_atom():
@@ -207,12 +299,10 @@ class Element:
                 x.append(".")
                 x.append(self.val2)
             return "(%s)" % " ".join(map(str, x))
-        elif self.is_ref():
-            return "REF(%s)" % (str(self.val1))
         elif self.is_error():
             return "ERR(%s)" % (str(self.val1))
         else:
-            return "FN(%d,%s)" % (str(self.val1))
+            return "FN(%s,%s)" % (self.val2.__class__.__name__, str(self.val1))
 
 class Tree:
     def __init__(self):
@@ -239,7 +329,220 @@ class Tree:
                 x = Element.Cons(el, x)
         return x
 
-class Operator:
+class fn_tree(Function):
+    @classmethod
+    def merge_one(cls, treeish):
+        if treeish.kind != CONS: return None
+        if treeish.val2.kind != CONS: return None
+        a = treeish.val1
+        b = treeish.val2.val1
+        assert a.kind == CONS and b.kind == CONS
+        assert a.val1.kind == ATOM and b.val1.kind == ATOM
+        an, bn = a.val1.atom_as_u64(), b.val1.atom_as_u64()
+        assert an <= bn
+        if an < bn:
+            return None
+        nt = Element.Cons(
+                Element.Cons(
+                   Element.Atom(an + 1),
+                   Element.Cons(a.val2.bumpref(), b.val2.bumpref())
+                ),
+                treeish.val2.val2.bumpref()
+             )
+        return nt
+
+    @classmethod
+    def merge(cls, el):
+        # FUNC( CONS( treeish, args ), .. )
+        if el.kind != FUNC or el.val1.kind != CONS: return
+        while True:
+            t2 = cls.merge_one(el.val1.val1)
+            if t2 is None: break
+            el.replace(FUNC, Element.Cons( t2, el.val1.val2.bumpref() ), el.val2)
+
+    def collapse(self, el):
+        assert el.kind == FUNC and el.val2 is self
+        assert el.val1.kind == CONS
+        assert el.val1.val1.kind == CONS # built something
+        t = el.val1.val1
+        assert t.kind == CONS
+        assert t.val1.kind == CONS
+        res = t.val1.val2.bumpref()
+        while t.val2.kind == CONS:
+            t = t.val2
+            res = Element.Cons(t.val1.val2.bumpref(), res)
+        el.replace(REF, res)
+
+    def resolve(self, el):
+        assert el.kind == FUNC and el.val2 is self
+        # CONS( nil|cons(cons(atom,none)) , nil|cons(none,none) )
+        r = check_complete(el.val1,
+               {CONS: (None, {ATOM: None, CONS: None})}
+            )
+        if True in r:
+            return r[True]
+        if False in r:
+            el.replace(REF, r[False])
+            return None
+        if ATOM in r[CONS,2]:
+            if r[CONS,2][ATOM].is_nil():
+                self.collapse(el)
+            else:
+                self.set_error_open_list(el)
+            return None
+        else:
+            sofar = el.val1.val1.bumpref()
+            add = Element.Cons(Element.Atom(0), r[CONS,2][CONS].val1.bumpref())
+            later = r[CONS,2][CONS].val2.bumpref()
+            new = Element.Cons( Element.Cons(add, sofar), later)
+            el.replace(FUNC, new, self)
+            self.merge(el)
+            return None
+
+# spec would be a constexpr template argument in c++
+# so recursion on "spec" is fine
+def __check_complete(el, spec):
+    r = check_complete(el, spec)
+    print(f"from {el} looking for {spec} got {r}")
+    return r
+
+def check_complete(el, spec):
+    fin = {}
+    queue = [(el, spec, fin)]
+    while queue:
+        el, spec, result = queue.pop(0)
+        if spec is None:
+            result[0] = el
+            continue
+        elcmp = el.get_complete()
+        if elcmp is None:
+            return {True: el}
+        if elcmp.kind == ERROR:
+            return {False: el.bumpref()}
+        valid = spec.keys() if isinstance(spec, dict) else [spec]
+        if elcmp.kind not in valid:
+            return {False: Element.Error("unexpected kind")}
+        k = elcmp.kind
+        v = spec[k] if isinstance(spec, dict) else None
+        result[k] = elcmp
+        if k == ATOM:
+            assert v is None
+        elif v is not None:
+            if isinstance(v, (tuple, list)):
+                assert len(v) == 2
+                result[k,1] = {}
+                result[k,2] = {}
+                queue.append( (elcmp.val1, v[0], result[k,1]) )
+                queue.append( (elcmp.val2, v[1], result[k,2]) )
+            else:
+                result[k,1] = {}
+                queue.append( (elcmp.val1, v, result[k,1]) )
+    return fin
+
+class fn_eval(Function):
+    def resolve(self, el):
+        assert el.kind == FUNC and el.val2 is self
+        r = check_complete(el.val1,
+               {CONS: (
+                  {ATOM: None,
+                   CONS: ({ATOM: None, CONS: None}, None)},
+                  None)}
+            )
+        if True in r:
+            return r[True]
+        if False in r:
+            el.replace(REF, r[False])
+            return None
+
+        if ATOM in r[CONS,1]:
+            # CONS(ATOM,None)  -- env lookup (0->nil; 1->env; 1+->split env)
+            return self.env_access(el, r[CONS,1][ATOM], r[CONS,2][0])
+        elif ATOM in r[CONS,1][CONS,1]:
+            # CONS(CONS(ATOM,None),None) -- program lookup
+            return self.eval_opcode(el, r[CONS,1][CONS,1][ATOM], r[CONS,1][CONS,2][0], r[CONS,2][0])
+        else:
+            # CONS(CONS(CONS,None),None) -- eval program to determine program
+            return self.eval_op_program(el, r[CONS,1][CONS,1][CONS], r[CONS,1][CONS,2][0], r[CONS,2][0])
+
+    def env_access(self, el, exp, env):
+        assert exp.kind == ATOM
+        n = exp.atom_as_u64_short()
+        if n is None:
+            el.set_error("invalid value for env lookup")
+            return None
+        if n == 0:
+            # nil goes to nil
+            el.replace(REF, Element.Atom(0))
+            return None
+        while n > 1:
+            c_env = env.get_complete()
+            if c_env is None:
+                return env
+            if c_env.kind != CONS:
+                el.set_error("invalid env path")
+                return None
+            env = c_env.val1 if n % 2 == 0 else c_env.val2
+            n //= 2
+            el.replace(FUNC, Element.Cons(Element.Atom(n), env.bumpref()), self)
+        el.replace(REF, env.bumpref())
+        return None
+
+    def eval_opcode(self, el, opcode_id, opcode_args, env):
+        assert opcode_id.kind == ATOM
+        if opcode_id.val2 > 8:
+            el.set_error("env lookup out of range")
+            return None
+        opcode_num = opcode_id.atom_as_u64_short()
+        if opcode_num is None:
+            el.set_error("function id out of range")
+            return None
+        if opcode_num == 0:
+            # q! special case
+            el.replace(REF, opcode_args.bumpref())
+            return None
+        op = Op_FUNCS.get(opcode_num, None)
+        if op is None:
+            el.set_error("unknown opcode")
+            return None
+        args = Element.Func(Element.Cons(opcode_args.bumpref(), env.bumpref()), fn_eval_list())
+        if opcode_num == 1:
+            # special case so that (a X) == (a X 1)
+            el.replace(FUNC, Element.Cons(env.bumpref(), args), op())
+        else:
+            el.replace(FUNC, args, op())
+        return None
+
+    def eval_op_program(self, el, prog, args, env):
+        assert prog.kind == CONS
+        prog = Element.Func(Element.Cons(prog.bumpref(), env.bumpref()), fn_eval)
+        progargs = Element.Cons(prog, args.bumpref())
+        el.replace(FUNC, Element.Cons(progargs, env.bumpref()), fn_eval)
+        return prog
+
+class fn_eval_list(Function):
+    def resolve(self, el):
+        assert el.kind == FUNC and el.val2 is self
+        r = check_complete(el.val1, {CONS: ({CONS: None, ATOM: None}, None)})
+        if True in r:
+            return r[True]
+        if False in r:
+            el.replace(REF, r[False])
+            return None
+        if ATOM in r[CONS,1]:
+            if r[CONS,1][ATOM].is_nil():
+                el.replace(REF, r[CONS,1][ATOM].bumpref())
+            else:
+                self.set_error_open_list(el)
+            return None
+        else:
+            env = r[CONS,2][0]
+            c = r[CONS,1][CONS]
+            head = Element.Func(Element.Cons(c.val1.bumpref(), env.bumpref()), fn_eval())
+            tail = Element.Func(Element.Cons(c.val2.bumpref(), env.bumpref()), fn_eval_list())
+            el.replace(CONS, head, tail)
+            return None
+
+class Operator(Function):
     state = 0
     def __init__(self):
         # do any special setup
@@ -253,23 +556,80 @@ class Operator:
         # return the result
         raise Exception("BUG: finish unimplemented")
 
+    def resolve(self, el):
+        assert el.kind == FUNC and el.val2 is self
+        r = check_complete(el.val1, {CONS: ({ATOM: None, CONS: None}, None), ATOM: None})
+        if True in r:
+            return r[True]
+        if False in r:
+            el.replace(REF, r[False])
+            return None
+
+        if ATOM in r:
+            if r[ATOM].is_nil():
+                fin = self.finish()
+                if isinstance(fin, list):
+                    newenv, program = fin
+                    el.replace(FUNC, Element.Cons(program, newenv), fn_eval())
+                else:
+                    el.replace(REF, fin)
+            else:
+                self.set_error_open_list(el)
+            ALLOCATOR.record_work(30)
+            return None
+        else:
+            h = r[CONS,1][CONS] if CONS in r[CONS,1] else r[CONS,1][ATOM]
+            t = r[CONS,2][0]
+            try:
+                self.argument(h.bumpref())
+                el.replace(FUNC, t.bumpref(), self)  # assumes no other refs to "self"
+            except AssertionError:
+                raise
+            except Exception as exc:
+                if len(str(exc)) <= 8: raise exc
+                el.set_error(str(exc))
+            return None
+
 class op_a(Operator):
     # if given multiple arguments, builds them up into a tree,
     # biased to the left
     def __init__(self):
         self.tree = Tree()
+        self.state = 0
     def argument(self, el):
         if self.state == 0:
             self.i = el
-            self.env = None
             self.state = 1
         else:
             self.tree.add(el)
     def finish(self):
         if self.state == 0:
-            raise Exception("a: requires at least one argument")
+            return Element.Error("a: requires at least one argument")
         env = self.tree.resolve()
         return [env, self.i]
+
+    def resolve(self, el):
+        # (env app tree...)
+        assert el.kind == FUNC and el.val2 is self
+        r = check_complete(el.val1, {CONS: (None, {CONS: (None, {ATOM: None, CONS: None})})})
+        if True in r:
+            return r[True]
+        if False in r:
+            el.replace(REF, r[False])
+            return None
+        env = r[CONS,1][0]
+        program = r[CONS,2][CONS,1][0]
+        if ATOM in r[CONS,2][CONS,2]:
+            if r[CONS,2][CONS,2][ATOM].is_nil():
+                el.replace(FUNC, Element.Cons(program.bumpref(), env.bumpref()), fn_eval())
+            else:
+                el.set_error_open_list(el)
+            return None
+
+        tree_args = Element.Cons(Element.Atom(0), r[CONS,2][CONS,2][CONS].bumpref())
+        tree = Element.Func(tree_args, fn_tree())
+        el.replace(FUNC, Element.Cons(program.bumpref(), tree), fn_eval())
+        return None
 
 class op_x(Operator):
     def __init__(self):
@@ -459,12 +819,11 @@ class op_cat(Operator):
             if new_size <= 8:
                 self.build.val1 += (el.val1 << (8*self.build.val2))
             else:
+                old_size = self.buid.alloc_size()
                 if self.build.val2 <= 8:
                     self.build.val1 = self.build.atom_as_bytes()
-                    ALLOCATOR.alloc(new_size, self.build.val1)
-                else:
-                    ALLOCATOR.realloc(self.build.val2, new_size, self.build.val1)
                 self.build.val1 += el.atom_as_bytes()
+                ALLOCATOR.realloc(old_size, self.build.alloc_size(), self.build)
             self.build.val2 = new_size
             el.deref()
 
@@ -478,9 +837,8 @@ class op_substr(Operator):
         self.start = None
         self.end = None
     def argument(self, el):
+        if not el.is_atom(): raise Exception("substr: arguments must be atoms")
         if self.el is None:
-            if not el.is_atom():
-                raise Exception("substr: must be atom")
             self.el = el
         elif self.start is None:
             self.start = el.atom_as_u64()
@@ -524,9 +882,31 @@ class op_mul_u64(Operator):
         self.i = 1
 
     def argument(self, el):
+        if not el.is_atom(): raise Exception("mul: arguments must be atoms")
         self.i *= el.atom_as_u64()
         self.i %= 0x1_0000_0000_0000_0000
         el.deref()
+
+    def finish(self):
+        return Element.Atom(self.i)
+
+class op_mod_u64(Operator):
+    def __init__(self):
+        self.i = None
+        self.state = 0
+
+    def argument(self, el):
+        if not el.is_atom(): raise Exception("mod: arguments must be atoms")
+        if self.i is None:
+            self.i = el.atom_as_u64()
+            el.deref()
+        elif self.state == 0:
+            self.i %= el.atom_as_u64()
+            self.state = 1
+            el.deref()
+        else:
+            el.deref()
+            raise Exception("mod: too many arguments")
 
     def finish(self):
         return Element.Atom(self.i)
@@ -536,6 +916,7 @@ class op_sub_u64(Operator):
         self.i = None
 
     def argument(self, el):
+        if not el.is_atom(): raise Exception("sub: arguments must be atoms")
         n = el.atom_as_u64()
         el.deref()
         if self.i is None:
@@ -555,6 +936,7 @@ class op_div_u64(Operator):
         self.i = None
 
     def argument(self, el):
+        if not el.is_atom(): raise Exception("div: arguments must be atoms")
         n = el.atom_as_u64()
         el.deref()
         if self.i is None:
@@ -570,7 +952,51 @@ class op_div_u64(Operator):
             raise Exception("div: missing arguments")
         return Element.Atom(self.i)
 
-class op_lt_u64(Operator):
+class op_lt_str(Operator):
+    def __init__(self):
+        self.last = None
+        self.ok = True
+
+    @classmethod
+    def lt(cls, a, b):
+        return a < b
+
+    def argument(self, el):
+        if not self.ok:
+            el.deref()
+            return
+
+        if self.last is None:
+            self.last = el
+        else:
+            self.ok = self.lt(self.last.atom_as_bytes(), el.atom_as_bytes())
+            self.last.deref()
+            if self.ok:
+                self.last = el
+            else:
+                el.deref()
+                self.last = None
+
+    def finish(self):
+        if self.last is not None:
+            self.last.deref()
+        return Element.Atom(self.ok)
+
+class op_lt_lendian(op_lt_str):
+    @classmethod
+    def lt(cls, a, b):
+        lena = len(a)
+        lenb = len(b)
+        i = max(lena, lenb)
+        while i > 0:
+            i -= 1
+            ca = a[i] if i < lena else 0
+            cb = b[i] if i < lenb else 0
+            if ca < cb: return True
+            if ca > cb: return False
+        return False
+
+class XXX_op_lt_u64(Operator):
     def __init__(self):
         self.i = -1
 
@@ -593,6 +1019,7 @@ class op_sha256(Operator):
         if not el.is_atom():
             raise Exception("sha256: cannot hash list")
         self.st.update(el.atom_as_bytes())
+        ALLOCATOR.record_work((el.val2 + 63)//64 * 256)
         el.deref()
 
     def finish(self):
@@ -602,12 +1029,14 @@ class op_hash160(op_sha256):
     def finish(self):
         x = hashlib.new("ripemd160")
         x.update(self.st.digest())
+        ALLOCATOR.record_work(256)
         return Element.Atom(x.digest())
 
 class op_hash256(op_sha256):
     def finish(self):
         x = hashlib.sha256()
         x.update(self.st.digest())
+        ALLOCATOR.record_work(256)
         return Element.Atom(x.digest())
 
 class op_bip340_verify(Operator):
@@ -635,7 +1064,7 @@ class op_bip340_verify(Operator):
         sig.deref()
         return Element.Atom(r)
 
-class op_bip342_txmsg:
+class op_bip342_txmsg(Operator):
     def __init__(self):
         self.sighash = None
 
@@ -659,7 +1088,7 @@ class op_bip342_txmsg:
         r = verystable.core.script.TaprootSignatureHash(txTo=GLOBAL_TX, spent_utxos=GLOBAL_UTXOS, hash_type=self.sighash, input_index=GLOBAL_TX_INPUT_IDX, scriptpath=True, annex=annex, script=GLOBAL_TX_SCRIPT)
         return Element.Atom(r)
 
-class op_tx:
+class op_tx(Operator):
     def __init__(self):
         # build up r as we go, by updating last_cons
         self.r = None
@@ -732,13 +1161,6 @@ class op_tx:
                 return Element.Atom(h)
             else:
                 return Element.Atom(0)
-
-        elif code == 7:
-            wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
-            if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
-                return Element.Atom(wit[-1])
-            else:
-                return Element.Atom(0)
         else:
             return Element.Atom(0)
 
@@ -797,7 +1219,7 @@ FUNCS = [
   (0x0b, "any", op_or),
 
   (0x0c, "=", op_eq),
-#  (0x0d, "<s", op_str_lt),
+  (0x0d, "<s", op_lt_str),
   (0x0e, "strlen", op_strlen),
   (0x0f, "substr", op_substr),
   (0x10, "cat", op_cat),
@@ -806,22 +1228,18 @@ FUNCS = [
 #  (0x12, "&", op_bit_and),
 #  (0x13, "|", op_bit_or),
 #  (0x14, "^", op_bit_xor),
-#  (0x15, "b<<", op_bit_lshift),
-#  (0x16, "b>>", op_bit_rshift),
-
   (0x17, "+", op_add_u64),
   (0x18, "-", op_sub_u64),
   (0x19, "*", op_mul_u64),
-#  (0x1a, "%", op_mod_u64),
+  (0x1a, "%", op_mod_u64),
 #  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))
-  (0x1c, "<", op_lt_u64),
 #  (0x1d, "<<", op_lshift_u64),
 #  (0x1e, ">>", op_rshift_u64),
 
-#  (0x1f, "log2e42", op_log2e42_u64),
-      ## allow both of these to apply to arbitrary atoms?
-      ## (500kB atoms are in range for log, < is just little
-      ##  endian with special handling for 0?)
+  (0x1c, "<", op_lt_lendian),   # not restricted to u64
+#  (0x1f, "log2b42", op_log2b42_u64),  # returns floor(log_2(x) * 2**42)
+      ## allow this to apply to arbitrary atoms?
+      ## (log of a 500kB atoms will fit into a u64)
 
 #  (0x20, "rd_csn", op_csn_read),  # convert CScriptNum to atom
 #  (0x21, "wr_csn", op_csn_write), # convert atom to CScriptNum
@@ -960,7 +1378,7 @@ def get_env(n, env):
         env = env.val2 if x else env.val1
     return env
 
-def eval(baseenv, inst, debug):
+def eager_eval(baseenv, inst, debug):
    assert isinstance(baseenv, Element)
    assert isinstance(inst, Element)
 
@@ -1078,21 +1496,79 @@ def eval(baseenv, inst, debug):
        assert False, "BUG: unreachable"
    assert False, "BUG: unreachable"
 
+
+def lazy_eval(env, sexpr, debug):
+    result = Element.Func(Element.Cons(sexpr.bumpref(), env.bumpref()), fn_eval())
+    stack = [(True, result)]
+    error = None
+    effort = 0
+    while stack:
+        assert error is None
+        ALLOCATOR.record_work(effort + 1)
+        effort = 0
+        if ALLOCATOR.over_limit(): break
+        dfs, work = stack.pop()
+        if debug: print(f"{len(stack)}/{0+dfs}:{effort}: {work}")
+        if work.kind == ATOM: continue
+        if work.kind == ERROR:
+            # early exit
+            error = work.bumpref()
+            break
+        if work.kind == REF:
+            if work.val1.kind == REF:
+                work.replace(REF, work.val1.val1.bumpref())
+                stack.append((dfs, work))
+                continue
+            else:
+                stack.append((dfs, work.val1))
+                continue
+        if work.kind == CONS:
+            if work.val1.kind == ERROR:
+                stack.append((dfs, work.val1))
+            elif work.val2.kind == ERROR:
+                stack.append((dfs, work.val2))
+            elif dfs:
+                if work.val2.kind != ATOM: stack.append((dfs, work.val2))
+                if work.val1.kind != ATOM: stack.append((dfs, work.val1))
+            continue
+        assert work.kind == FUNC
+        stack.append((dfs, work))
+        x = work.val2.resolve(work)
+        if ALLOCATOR.over_limit(): break
+        if x is not None:
+            assert isinstance(x, Element)
+            stack.append((False, x))
+
+    ALLOCATOR.record_work(effort)
+    if ALLOCATOR.over_limit():
+        assert error is None
+        #result.bumpref()
+        error = Element.Error("exceeded execution limits")
+    if error is not None:
+        result.deref()
+        result = error
+    return result
+
 class Rep:
-    def __init__(self, env, debug=False):
+    def __init__(self, env, debug=False, lazy=True):
         self.env = env
         self.debug = debug
+        self.lazy = lazy
 
     def __call__(self, program, debug=None):
         if debug is None: debug = self.debug
         if debug: print("PROGRAM: %s" % (program,))
-        ALLOCATOR.max = 0
-        init_x = ALLOCATOR.x
-        #before_x = set(ALLOCATOR.alloced)
         p = SExpr.parse(program, many=False)
+        ALLOCATOR.max = 0
+        ALLOCATOR.reset_work()
+        init_x = ALLOCATOR.x
+        before_x = set(ALLOCATOR.alloced)
         try:
-            r = eval(self.env, p, debug=debug)
-            print("MAX=%s ; %s -> %s" % (ALLOCATOR.max, program, r))
+            if self.lazy:
+                r = lazy_eval(self.env, p, debug=debug)
+            else:
+                r = eager_eval(self.env, p, debug=debug)
+            print("MAX=%s WORK=%s ; %s -> %s" % (ALLOCATOR.max, ALLOCATOR.effort, program, r))
             r.deref()
         except:
             print("%s -> FAILED" % (program,))
@@ -1106,20 +1582,25 @@ class Rep:
             ## or similar for normal execution failures, and only raise
             ## for BUG scenarios? need to count "execution load" somewhere
             ## as well
-        p.deref()
-        #if ALLOCATOR.x != init_x:
-        #    print("=======================")
-        #    for el in ALLOCATOR.alloced:
-        #        if el not in before_x:
-        #            print(el._refs, el)
-        #    print("=======================")
+        if ALLOCATOR.x != init_x:
+            print("=======================")
+            for el,ln in ALLOCATOR.alloced.items():
+                if el not in before_x:
+                    print(el._refs, ln, el)
+            print("=======================")
+            print("pre-existing:")
+            for el,ln in ALLOCATOR.alloced.items():
+                if el in before_x:
+                    print(el._refs, ln, el)
+            print("=======================")
         assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
+        p.deref()
 
 nil = Element.Atom(0)
 one = Element.Atom(1)
 
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
-print("Env: %s" % (rep.env))
+print("\nBasic syntax -- Env: %s" % (rep.env))
 
 rep("1")
 rep("(q . 1)")
@@ -1156,18 +1637,38 @@ rep("(<)")
 rep("(< '1)")
 rep("(< '1 '2)")
 rep("(< '2 '1)")
+rep("(+ '1 '2 . '3)")
+rep("(<s)")
+rep("(<s '1)")
+rep("(<s '99 '66 '88)")
+rep("(<s '1 '2 '3)")
+rep("(<s nil '0x00 '0x0001 '0x01 '0x02)")
+rep("(<s '0x00 '0x0001 '0x01 '0x0002)")
+rep("(c (<s '254 '255) (< '254 '255) nil)")
+rep("(c (<s '255 '256) (< '255 '256) nil)")
+rep("(%)")
+rep("(% '100 '3)")
+rep("(% '100 '3 '2)")
 
 # factorial
 # n=2, fn=3
 # `if 2 (a 3 (- 2 '1) 3)
 rep = Rep(SExpr.parse("(a (i 2 '(* 2 (a 3 (- 2 '1) 3)) ''1))"))
-rep("(a 1 '150 1)")
+print("\nInefficient factorial -- Env: %s" % (rep.env))
+rep("(a 1 '3 1)")
+rep("(a 1 '10 1)")
+rep("(a 1 '40 1)")
+#rep("(a 1 '150 1)")
 #rep("(a 1 (c '15000 1))")
 
 # factorial but efficient
 rep = Rep(SExpr.parse("(a (i 2 '(a 7 (c (- 2 '1) (* 5 2) 7)) '(c 5)))"))
-rep("(a 1 (c '150 '1 1))")
-#rep("(a 1 (c '15000 '1 1))")
+print("\nEfficient (?) factorial -- Env: %s" % (rep.env))
+rep("(a 1 (c '3 '1 1))")
+rep("(a 1 (c '10 '1 1))")
+rep("(a 1 (c '40 '1 1))")
+rep("(a 1 (c '150 '1 1))")  # nil since 66! == 0 (mod 2**64)
+rep("(a 1 (c '15000 '1 1))")
 
 # sum factorial (+ 1! 2! 3! 4! ... n!)
 # (proxy for (sha256 1! 2! .. n!)
@@ -1176,6 +1677,7 @@ rep("(a 1 (c '150 '1 1))")
 # 4=fn 6=(a-1)! 5=a 7=left!
 
 rep = Rep(SExpr.parse("(a (i 7 '(c (c nil 6) (a 4 4 (* 6 5) (+ 5 '1) (- 7 '1))) '(c nil)))"))
+print("\nSum factorial (1! + 2! + .. + n!) -- Env: %s" % (rep.env))
 #rep("(a 1 1 '1 '1 '10)")
 rep("(c '+ (a 1 1 '1 '1 '10))")
 rep("(a (c '+ (a 1 1 '1 '1 '10)))")
@@ -1191,12 +1693,15 @@ rep("(a (c '+ (a 1 1 '1 '1 '10)))")
 # env = (n a b FIB) ; n=2, a=5, b=11, FIB=15
 
 rep = Rep(SExpr.parse("(a (i 2 '(a 15 (c (- 2 '1) 11 (+ 5 11) 15)) '(c 5)))"))
+print("\nFibonacci 1 -- Env: %s" % (rep.env))
 rep("(a 1 (c '300 '0 '1 1))")
 
 rep = Rep(SExpr.parse("(a (i 4 '(a 7 (- 4 '1) 5 (+ 6 5) 7) '(c 6)))"))
+print("\nFibonacci 2 -- Env: %s" % (rep.env))
 rep("(a 1 '300 '0 '1 1)")
 
 rep = Rep(SExpr.parse("0x0200000015a20d97f5a65e130e08f2b254f97f65b96173a7057aef0da203000000000000887e309c02ebdddbd0f3faff78f868d61b1c4cff2a25e5b3c9d90ff501818fa0e7965d508bdb051a40d8d8f7"))
+print("\nHash a transaction -- Env: %s" % (rep.env))
 rep("(sha256 (sha256 1))")
 rep("(hash256 1)")
 
@@ -1239,10 +1744,11 @@ rep("(a '1 '1 '2 '3 '4 '5 '6 '7 '8 '9 '10)")
 # acc fn 0 n nil -> acc fn 1 (- n 1) (cat nil (fn 0))
 #  8  12 10 14 3
 rep = Rep(SExpr.parse("(a (i 14 '(a 8 8 12 (+ 10 '1) (- 14 '1) (cat 3 (a 12 10))) '3))"))
+print("\nBIP342 calculated manually -- Env: %s" % (rep.env))
 rep("(bip342_txmsg)")
 
 # implement sighash_all, codesep_pos=-1, len(scriptPubKey) < 253
-rep("(a '(sha256 4 4 '0x00 6 3) (sha256 '\"TapSighash\") (cat '0x00 (tx '0) (tx '1) (sha256 (a 1 1 '(cat (tx (c '11 1)) (tx (c '12 1))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '15 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(a '(cat (strlen 1) 1) (tx (c '16 '0))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '10 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(cat (tx (c '20 1)) (a '(cat (strlen 1) 1) (tx (c '21 1)))) '0 (tx '3) 'nil)) (i (tx '7) '0x03 '0x01) (substr (cat (tx '4) '0x00000000) 'nil '4) (i (tx '7) (sha256 (a '(cat (strlen 1) 1) (tx '7))) 'nil)) (cat (tx '6) '0x00 '0xffffffff))")
+rep("(a '(sha256 4 4 '0x00 6 3) (sha256 '\"TapSighash\") (cat '0x00 (tx '0) (tx '1) (sha256 (a 1 1 '(cat (tx (c '11 1)) (tx (c '12 1))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '15 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(a '(cat (strlen 1) 1) (tx (c '16 '0))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '10 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(cat (tx (c '20 1)) (a '(cat (strlen 1) 1) (tx (c '21 1)))) '0 (tx '3) 'nil)) (i (tx '14) '0x03 '0x01) (substr (cat (tx '4) '0x00000000) 'nil '4) (i (tx '14) (sha256 (a '(cat (strlen 1) 1) (tx '14))) 'nil)) (cat (tx '6) '0x00 '0xffffffff))")
 
 print("----")
 for a in [0,1,2,3,4,5,6,7,10,11,12,13,14,15,16,20,21]:
