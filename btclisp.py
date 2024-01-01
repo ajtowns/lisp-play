@@ -1324,6 +1324,9 @@ FUNCS = [
 
   (0x2b, "tx", op_tx),
   (0x2c, "bip342_txmsg", op_bip342_txmsg),
+#  (0x2d, "bip345_accrue", op_bip345_accrue),
+      ## for simulating op_vault, add the ability to assert that
+      ## funds from this input have been distributed to a given output
 ]
 
 def _Do_FUNCS():
