@@ -16,7 +16,7 @@ class Allocator:
         self.allocated = dict()
         self.limit = 500000
         self.effort = 0
-        self.effort_limit = 1000000 #*10000000
+        self.effort_limit = 100000 #*10000000
         self.counter = 0
         self.freed = dict()
 
@@ -58,7 +58,7 @@ class Allocator:
         assert w in self.allocated
         assert self.allocated[w][0] == n, f"free size mismatch expected {self.allocated[w][0]} got {n} for {w}"
         self.x -= n
-        self.freed[w] = self.allocated[w]
+        #self.freed[w] = self.allocated[w]
         del self.allocated[w]
 
 class Function:
@@ -1575,19 +1575,19 @@ def lazy_eval(env, sexpr, debug):
         if ALLOCATOR.over_limit(): break
         dfs, work = stack.pop()
         if debug: print(f"{len(stack)}/{0+dfs}:{ALLOCATOR.effort}: {work}")
-        if work.kind == ATOM: continue
-        if work.kind == ERROR:
-            # early exit
-            error = work.bumpref()
-            break
         if work.kind == REF:
             if work.val1.kind == REF:
                 work.replace(REF, work.val1.val1.bumpref())
                 stack.append((dfs, work))
                 continue
             else:
-                stack.append((dfs, work.val1))
-                continue
+                work = work.val1
+                # pass through
+        if work.kind == ERROR:
+            # early exit
+            error = work.bumpref()
+            break
+        if work.kind == ATOM: continue
         if work.kind == CONS:
             if work.val1.kind == ERROR:
                 stack.append((dfs, work.val1))
