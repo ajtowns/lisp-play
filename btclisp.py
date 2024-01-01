@@ -13,14 +13,17 @@ class Allocator:
     def __init__(self):
         self.x = 0
         self.max = 0
-        self.alloced = dict()
+        self.allocated = dict()
         self.limit = 500000
         self.effort = 0
-        self.effort_limit = 100000 #*10000000
+        self.effort_limit = 1000000 #*10000000
         self.counter = 0
+        self.freed = dict()
 
     def reset_work(self):
         self.effort = 0
+        self.freed = dict()
+
     def record_work(self, effort):
         self.effort += effort
 
@@ -38,22 +41,32 @@ class Allocator:
             lines.append(frame.f_lineno)
             frame = frame.f_back
         self.counter += 1
-        self.alloced[w] = (self.counter, lines)
+        self.allocated[w] = [n, (self.counter, lines)]
 
     def realloc(self, old, new, w):
-        assert w in self.alloced
+        assert w in self.allocated
+        assert self.allocated[w][0] == old, f"realloc size mismatch expected {self.allocated[w][0]} got {old} for {w}"
         self.x += (new - old)
+        self.allocated[w][0] = new
         if self.x > self.max:
             self.max = self.x
 
     def free(self, n, w):
         assert n >= 0
+        if w not in self.allocated and w in self.freed:
+            print(f"DOUBLE-FREE {w} // {self.freed[w]}")
+        assert w in self.allocated
+        assert self.allocated[w][0] == n, f"free size mismatch expected {self.allocated[w][0]} got {n} for {w}"
         self.x -= n
-        del self.alloced[w]
+        self.freed[w] = self.allocated[w]
+        del self.allocated[w]
 
 class Function:
     def __init__(self):
         pass # setup internal state
+
+    def abandon(self):
+        return [] # return list of elements to abandon
 
     def resolve(self, el):
         el.set_error("resolve unimplemented")
@@ -72,7 +85,7 @@ REF=252
 FUNC=251
 
 class Element:
-    re_printable = re.compile(b"^[a-zA-Z0-9 _(),:-]+$")
+    re_printable = re.compile(b"^[a-zA-Z0-9 _(),:'-]+$")
     _nil = None
     _one = None
 
@@ -109,6 +122,7 @@ class Element:
             ALLOCATOR.realloc(24, self.alloc_size(), self)
 
     def bumpref(self):
+        assert self._refs > 0
         self._refs += 1
         return self
 
@@ -139,6 +153,12 @@ class Element:
                 self.toderef(stk, self.val1, self.val2)
             else:
                 self.toderef(stk, self.val2, self.val1)
+        elif self.kind == FUNC:
+            self.toderef(stk, self.val1)
+            assert not hasattr(self.val2, "abandoned")
+            self.val2.abandoned = 1
+            for sub_el in self.val2.abandon():
+                self.toderef(stk, sub_el)
         else: # REF, ERROR, FN
              self.toderef(stk, self.val1)
              assert not isinstance(self.val2, Element)
@@ -153,6 +173,11 @@ class Element:
         if self.kind == ATOM and self.val2 > 8:
             ALLOCATOR.realloc(self.alloc_size(), 24, self)
         self.set(kind, val1, val2)
+
+    def replace_func_state(self, new_val1):
+        assert self.kind == FUNC
+        self.val1.deref()
+        self.val1 = new_val1
 
     def set_error(self, msg):
         if isinstance(msg, (str, bytes)):
@@ -224,6 +249,7 @@ class Element:
 
     def dupe_atom(self):
         assert self.kind == ATOM
+        assert self._refs > 1
         v = self.val1
         if isinstance(v, bytes):
             v = v[:] # copy
@@ -345,7 +371,7 @@ class fn_tree(Function):
         nt = Element.Cons(
                 Element.Cons(
                    Element.Atom(an + 1),
-                   Element.Cons(a.val2.bumpref(), b.val2.bumpref())
+                   Element.Cons(b.val2.bumpref(), a.val2.bumpref())
                 ),
                 treeish.val2.val2.bumpref()
              )
@@ -358,7 +384,7 @@ class fn_tree(Function):
         while True:
             t2 = cls.merge_one(el.val1.val1)
             if t2 is None: break
-            el.replace(FUNC, Element.Cons( t2, el.val1.val2.bumpref() ), el.val2)
+            el.replace_func_state(Element.Cons( t2, el.val1.val2.bumpref() ))
 
     def collapse(self, el):
         assert el.kind == FUNC and el.val2 is self
@@ -371,7 +397,11 @@ class fn_tree(Function):
         while t.val2.kind == CONS:
             t = t.val2
             res = Element.Cons(t.val1.val2.bumpref(), res)
-        el.replace(REF, res)
+        if res.kind == CONS:
+            el.replace(CONS, res.val1.bumpref(), res.val2.bumpref())
+            res.deref()
+        else:
+            el.replace(REF, res)
 
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
@@ -395,7 +425,7 @@ class fn_tree(Function):
             add = Element.Cons(Element.Atom(0), r[CONS,2][CONS].val1.bumpref())
             later = r[CONS,2][CONS].val2.bumpref()
             new = Element.Cons( Element.Cons(add, sofar), later)
-            el.replace(FUNC, new, self)
+            el.replace_func_state(new)
             self.merge(el)
             return None
 
@@ -483,7 +513,7 @@ class fn_eval(Function):
                 return None
             env = c_env.val1 if n % 2 == 0 else c_env.val2
             n //= 2
-            el.replace(FUNC, Element.Cons(Element.Atom(n), env.bumpref()), self)
+            el.replace_func_state(Element.Cons(Element.Atom(n), env.bumpref()))
         el.replace(REF, env.bumpref())
         return None
 
@@ -514,9 +544,9 @@ class fn_eval(Function):
 
     def eval_op_program(self, el, prog, args, env):
         assert prog.kind == CONS
-        prog = Element.Func(Element.Cons(prog.bumpref(), env.bumpref()), fn_eval)
+        prog = Element.Func(Element.Cons(prog.bumpref(), env.bumpref()), fn_eval())
         progargs = Element.Cons(prog, args.bumpref())
-        el.replace(FUNC, Element.Cons(progargs, env.bumpref()), fn_eval)
+        el.replace_func_state(Element.Cons(progargs, env.bumpref()))
         return prog
 
 class fn_eval_list(Function):
@@ -572,7 +602,14 @@ class Operator(Function):
                     newenv, program = fin
                     el.replace(FUNC, Element.Cons(program, newenv), fn_eval())
                 else:
-                    el.replace(REF, fin)
+                    assert fin._refs > 0
+                    if fin._refs == 1:
+                        el.replace(fin.kind, fin.val1, fin.val2)
+                        ALLOCATOR.realloc(fin.alloc_size(), 24, fin)
+                        fin.set(ATOM, 0, 0)
+                        fin.deref()
+                    else:
+                        el.replace(REF, fin)
             else:
                 self.set_error_open_list(el)
             ALLOCATOR.record_work(30)
@@ -580,12 +617,15 @@ class Operator(Function):
         else:
             h = r[CONS,1][CONS] if CONS in r[CONS,1] else r[CONS,1][ATOM]
             t = r[CONS,2][0]
+            assert h._refs > 0
+            h.bumpref()
             try:
-                self.argument(h.bumpref())
-                el.replace(FUNC, t.bumpref(), self)  # assumes no other refs to "self"
+                self.argument(h)
+                el.replace_func_state(t.bumpref())
             except AssertionError:
-                raise
+                raise # This is a bug, so don't worry about memory management
             except Exception as exc:
+                h.deref() # Buggy to throw an exception after deref'ing, fine to throw beforehand
                 if len(str(exc)) <= 8: raise exc
                 el.set_error(str(exc))
             return None
@@ -665,7 +705,12 @@ class op_i(Operator):
             raise Exception("i: must provide condition argument")
         if self.state == 1:
             raise Exception("i: must provide then argument")
+        self.state = -1 # done!
         return self.result
+    def abandon(self):
+       if self.state > 1:
+           return [self.result]
+       return []
 
 class op_softfork(Operator):
     def argument(self, el):
@@ -680,13 +725,19 @@ class op_h(Operator):
         if el.is_atom():
             raise Exception("h: received non-list argument %s" % (el,))
         self.r = el.val1.bumpref()
+        assert el.val1._refs > 1
         el.deref()
         self.state += 1
 
     def finish(self):
         if self.state == 0:
             raise Exception("h: must provide list argument")
+        self.state = -1
         return self.r
+
+    def abandon(self):
+       assert self.state == -1
+       return [self.r] if self.state > 0 else []
 
 class op_t(Operator):
     def argument(self, el):
@@ -701,7 +752,11 @@ class op_t(Operator):
     def finish(self):
         if self.state == 0:
             raise Exception("t: must provide list argument")
+        self.state = -1
         return self.r
+
+    def abandon(self):
+       return [self.r] if self.state > 0 else []
 
 class op_l(Operator):
     def argument(self, el):
@@ -736,7 +791,14 @@ class op_c(Operator):
     def finish(self):
         if self.res is None:
             return Element.Atom(0)
-        return self.res
+        r = self.res
+        self.res = None
+        return r
+
+    def abandon(self):
+       if self.res is not None:
+           return [self.res]
+       return []
 
 class op_nand(Operator):
     # aka are any false?
@@ -790,14 +852,17 @@ class op_eq(Operator):
     def finish(self):
         if self.h is not None:
             self.h.deref()
+            self.h = None
         return Element.Atom(self.ok)
+    def abandon(self):
+       return [self.h] if self.h is not None else []
 
 class op_strlen(Operator):
    def __init__(self):
        self.v = 0
    def argument(self, el):
         if not el.is_atom():
-            raise Exception(f"len: not an atom: {el}")
+            raise Exception("len: not an atom")
         self.v += el.val2
         el.deref()
    def finish(self):
@@ -807,29 +872,34 @@ class op_cat(Operator):
     def __init__(self):
         self.build = None
     def argument(self, el):
-        if not el.is_atom():
-            raise Exception(f"cat: argument not an atom: {el}")
+        if not el.is_atom(): raise Exception("cat: argument not an atom")
         if self.build is None:
             self.build = el
-        else:
             if self.build._refs > 1:
                 self.build = self.build.dupe_atom()
-
+        else:
+            assert self.build._refs == 1
             new_size = self.build.val2 + el.val2
             if new_size <= 8:
                 self.build.val1 += (el.val1 << (8*self.build.val2))
+                self.build.val2 = new_size
             else:
-                old_size = self.buid.alloc_size()
+                old_alloc = self.build.alloc_size()
                 if self.build.val2 <= 8:
                     self.build.val1 = self.build.atom_as_bytes()
                 self.build.val1 += el.atom_as_bytes()
-                ALLOCATOR.realloc(old_size, self.build.alloc_size(), self.build)
-            self.build.val2 = new_size
+                self.build.val2 = new_size
+                ALLOCATOR.realloc(old_alloc, self.build.alloc_size(), self.build)
             el.deref()
 
     def finish(self):
         if self.build is None: return Element.Atom(0)
-        return self.build
+        b = self.build
+        self.build = None
+        return b
+
+    def abandon(self):
+       return [self.build] if self.build is not None else []
 
 class op_substr(Operator):
     def __init__(self):
@@ -849,21 +919,27 @@ class op_substr(Operator):
         else:
             raise Exception("substr: too many arguments")
     def finish(self):
-        if self.el is None: return Element.Atom(0)
-        if self.start is None: return self.el
+        el = self.el
+        self.el = None
+
+        if el is None: return Element.Atom(0)
+        if self.start is None: return el
         if self.start == 0:
-            if self.end is None: return self.el
-            if self.end >= self.el.val2: return self.el
+            if self.end is None: return el
+            if self.end >= el.val2: return el
         if self.end is None:
-            self.end = self.el.val2
-        if self.el.val2 <= 8:
+            self.end = el.val2
+        if el.val2 <= 8:
             m = 0xFFFF_FFFF_FFFF_FFFF
-            n = self.el.val1
+            n = el.val1
             s = Element.Atom(((m^(m<<(self.end*8))) & n) >> (self.start*8), self.end-self.start)
         else:
-            s = Element.Atom(self.el.val1[self.start:self.end])
-        self.el.deref()
+            s = Element.Atom(el.val1[self.start:self.end])
+        el.deref()
         return s
+
+    def abandon(self):
+       return [self.el] if self.el is not None else []
 
 class op_add_u64(Operator):
     def __init__(self):
@@ -899,14 +975,12 @@ class op_mod_u64(Operator):
         if not el.is_atom(): raise Exception("mod: arguments must be atoms")
         if self.i is None:
             self.i = el.atom_as_u64()
-            el.deref()
         elif self.state == 0:
             self.i %= el.atom_as_u64()
             self.state = 1
-            el.deref()
         else:
-            el.deref()
             raise Exception("mod: too many arguments")
+        el.deref()
 
     def finish(self):
         return Element.Atom(self.i)
@@ -980,7 +1054,11 @@ class op_lt_str(Operator):
     def finish(self):
         if self.last is not None:
             self.last.deref()
+            self.last = None
         return Element.Atom(self.ok)
+
+    def abandon(self):
+        return [self.last] if self.last is not None else []
 
 class op_lt_lendian(op_lt_str):
     @classmethod
@@ -995,21 +1073,6 @@ class op_lt_lendian(op_lt_str):
             if ca < cb: return True
             if ca > cb: return False
         return False
-
-class XXX_op_lt_u64(Operator):
-    def __init__(self):
-        self.i = -1
-
-    def argument(self, el):
-        k = el.atom_as_u64()
-        if self.i is not None and self.i < k:
-            self.i = k
-        else:
-            self.i = None
-        el.deref()
-
-    def finish(self):
-        return Element.Atom(self.i is not None)
 
 class op_sha256(Operator):
     def __init__(self):
@@ -1106,7 +1169,6 @@ class op_tx(Operator):
                 raise Exception("tx: expects atoms or pairs of atoms")
             code = el.val1.atom_as_u64()
             which = el.val2.atom_as_u64()
-        el.deref()
         result = self.get_tx_info(code, which)
         if self.r is None:
             self.r = result
@@ -1119,6 +1181,7 @@ class op_tx(Operator):
             assert self.last_cons.val2.val2 == 0
             self.last_cons.val2 = Element.Cons(result, self.last_cons.val2)
             self.last_cons = self.last_cons.val2
+        el.deref()
 
     def get_tx_info(self, code, which):
         if 0 <= code <= 9:
@@ -1199,7 +1262,12 @@ class op_tx(Operator):
 
     def finish(self):
         if self.r is None: return Element.Atom(0)
-        return self.r
+        r = self.r
+        self.r = None
+        return r
+
+    def abandon(self):
+        return [self.r] if self.r is not None else []
 
 FUNCS = [
   (b'', "q", None), # quoting indicator, special
@@ -1501,14 +1569,12 @@ def lazy_eval(env, sexpr, debug):
     result = Element.Func(Element.Cons(sexpr.bumpref(), env.bumpref()), fn_eval())
     stack = [(True, result)]
     error = None
-    effort = 0
     while stack:
         assert error is None
-        ALLOCATOR.record_work(effort + 1)
-        effort = 0
+        ALLOCATOR.record_work(1)
         if ALLOCATOR.over_limit(): break
         dfs, work = stack.pop()
-        if debug: print(f"{len(stack)}/{0+dfs}:{effort}: {work}")
+        if debug: print(f"{len(stack)}/{0+dfs}:{ALLOCATOR.effort}: {work}")
         if work.kind == ATOM: continue
         if work.kind == ERROR:
             # early exit
@@ -1539,7 +1605,6 @@ def lazy_eval(env, sexpr, debug):
             assert isinstance(x, Element)
             stack.append((False, x))
 
-    ALLOCATOR.record_work(effort)
     if ALLOCATOR.over_limit():
         assert error is None
         #result.bumpref()
@@ -1562,7 +1627,7 @@ class Rep:
         ALLOCATOR.max = 0
         ALLOCATOR.reset_work()
         init_x = ALLOCATOR.x
-        before_x = set(ALLOCATOR.alloced)
+        before_x = set(ALLOCATOR.allocated)
         try:
             if self.lazy:
                 r = lazy_eval(self.env, p, debug=debug)
@@ -1584,14 +1649,20 @@ class Rep:
             ## as well
         if ALLOCATOR.x != init_x:
             print("=======================")
-            for el,ln in ALLOCATOR.alloced.items():
+            print("leaked:")
+            for el,ln in ALLOCATOR.allocated.items():
                 if el not in before_x:
                     print(el._refs, ln, el)
             print("=======================")
             print("pre-existing:")
-            for el,ln in ALLOCATOR.alloced.items():
+            for el,ln in ALLOCATOR.allocated.items():
                 if el in before_x:
                     print(el._refs, ln, el)
+            print("=======================")
+            print("missing:")
+            for el in before_x:
+                if el not in ALLOCATOR.allocated:
+                    print("...", el)
             print("=======================")
         assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
         p.deref()
@@ -1602,6 +1673,7 @@ one = Element.Atom(1)
 rep = Rep(SExpr.parse("((55 . 33) . (22 . 8))"))
 print("\nBasic syntax -- Env: %s" % (rep.env))
 
+
 rep("1")
 rep("(q . 1)")
 rep("(q . q)")
@@ -1610,6 +1682,11 @@ rep("'(1)")
 rep("'\"q\"")
 rep("(+ '2 '2 . 0)")
 rep("(+ (q . 2) '2)")
+rep("(a '1 '1 '2 '3 '4)")
+rep("(a '1 '1 '2 '3 '4 '5)")
+rep("(a '1 '1 '2 '3 '4 '5 '6)")
+rep("(a '1 '1 '2 '3 '4 '5 '6 '7)")
+rep("(a '1 '1 '2 '3 '4 '5 '6 '7 '8)")
 rep("(a '(+ '2 '2))")
 rep("(h '(4 5 6))")
 rep("(t '(4 5 6))")
@@ -1695,10 +1772,12 @@ rep("(a (c '+ (a 1 1 '1 '1 '10)))")
 rep = Rep(SExpr.parse("(a (i 2 '(a 15 (c (- 2 '1) 11 (+ 5 11) 15)) '(c 5)))"))
 print("\nFibonacci 1 -- Env: %s" % (rep.env))
 rep("(a 1 (c '300 '0 '1 1))")
+rep("(a 1 (c '500 '0 '1 1))")
 
 rep = Rep(SExpr.parse("(a (i 4 '(a 7 (- 4 '1) 5 (+ 6 5) 7) '(c 6)))"))
 print("\nFibonacci 2 -- Env: %s" % (rep.env))
 rep("(a 1 '300 '0 '1 1)")
+rep("(a 1 '500 '0 '1 1)")
 
 rep = Rep(SExpr.parse("0x0200000015a20d97f5a65e130e08f2b254f97f65b96173a7057aef0da203000000000000887e309c02ebdddbd0f3faff78f868d61b1c4cff2a25e5b3c9d90ff501818fa0e7965d508bdb051a40d8d8f7"))
 print("\nHash a transaction -- Env: %s" % (rep.env))
@@ -1741,6 +1820,9 @@ rep("(hash256 (tx '5))")
 rep("(a '1 '1 '2 '3 '4 '5)")
 rep("(a '1 '1 '2 '3 '4 '5 '6 '7 '8 '9 '10)")
 
+for a in [0,1,2,3,4,5,6,7,10,11,12,13,14,15,16,20,21]:
+    rep("(tx '%d)" % (a,))
+
 # acc fn 0 n nil -> acc fn 1 (- n 1) (cat nil (fn 0))
 #  8  12 10 14 3
 rep = Rep(SExpr.parse("(a (i 14 '(a 8 8 12 (+ 10 '1) (- 14 '1) (cat 3 (a 12 10))) '3))"))
@@ -1749,10 +1831,6 @@ rep("(bip342_txmsg)")
 
 # implement sighash_all, codesep_pos=-1, len(scriptPubKey) < 253
 rep("(a '(sha256 4 4 '0x00 6 3) (sha256 '\"TapSighash\") (cat '0x00 (tx '0) (tx '1) (sha256 (a 1 1 '(cat (tx (c '11 1)) (tx (c '12 1))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '15 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(a '(cat (strlen 1) 1) (tx (c '16 '0))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '10 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(cat (tx (c '20 1)) (a '(cat (strlen 1) 1) (tx (c '21 1)))) '0 (tx '3) 'nil)) (i (tx '14) '0x03 '0x01) (substr (cat (tx '4) '0x00000000) 'nil '4) (i (tx '14) (sha256 (a '(cat (strlen 1) 1) (tx '14))) 'nil)) (cat (tx '6) '0x00 '0xffffffff))")
-
-print("----")
-for a in [0,1,2,3,4,5,6,7,10,11,12,13,14,15,16,20,21]:
-    rep("(tx '%d)" % (a,))
 
 rep("(cat '0x1122 '0x3344)")
 
