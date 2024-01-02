@@ -1273,6 +1273,10 @@ FUNCS = [
   (b'', "q", None), # quoting indicator, special
 
   (0x01, "a", op_a),  # apply
+#  (0x99, "partial", op_partial),  # partially apply the following function
+     ## can be continued by being used as an opcode, or be another op_partial
+     ## means i need to make argument()/finish() the standard way of doing
+     ## "everything" though?
   (0x02, "x", op_x),  # exception
   (0x03, "i", op_i),  # eager-evaluated if
   (0x04, "sf", op_softfork),
@@ -1309,8 +1313,8 @@ FUNCS = [
       ## allow this to apply to arbitrary atoms?
       ## (log of a 500kB atoms will fit into a u64)
 
-#  (0x20, "rd_csn", op_csn_read),  # convert CScriptNum to atom
-#  (0x21, "wr_csn", op_csn_write), # convert atom to CScriptNum
+#  (0x20, "rd_csn", op_csn_read),  # convert CScriptNum to u64?
+#  (0x21, "wr_csn", op_csn_write), # convert u64 to CScriptNum?
 #  (0x22, "rd_list", op_list_read), # read bytes to Element
 #  (0x23, "wr_list", op_list_write), # write Element as bytes
 
