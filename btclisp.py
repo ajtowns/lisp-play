@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
-import sys
-import re
 import hashlib
+import re
+import sys
+import time
+
 import verystable.core.key
 import verystable.core.messages
 import verystable.core.script
@@ -1636,11 +1638,13 @@ class Rep:
         init_x = ALLOCATOR.x
         before_x = set(ALLOCATOR.allocated)
         try:
+            t = time.time()
             if self.lazy:
                 r = lazy_eval(self.env, p, debug=debug)
             else:
                 r = eager_eval(self.env, p, debug=debug)
-            print("MAX=%s WORK=%s ; %s -> %s" % (ALLOCATOR.max, ALLOCATOR.effort, program, r))
+            elapsed = time.time() - t
+            print("MAX=%s WORK=%s ELAPSED=%.1f ; %s -> %s" % (ALLOCATOR.max, ALLOCATOR.effort, elapsed, program, r))
             r.deref()
         except:
             print("%s -> FAILED" % (program,))
