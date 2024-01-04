@@ -1216,6 +1216,7 @@ class op_tx(Operator):
         elif code == 5:
             return Element.Atom(GLOBAL_TX.serialize_without_witness())
         elif code == 6:
+            # the TapLeaf hash for the current script
             wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
             n = len(wit) - 1
             if n >= 0 and wit[n][0] == 0x50: n -= 1 # skip annex
@@ -1226,6 +1227,8 @@ class op_tx(Operator):
                 return Element.Atom(h)
             else:
                 return Element.Atom(0)
+        # should also be able to pull out control block information,
+        # eg merkle path and internal pubkey
         else:
             return Element.Atom(0)
 
@@ -1242,6 +1245,7 @@ class op_tx(Operator):
         elif code == 13:
              return Element.Atom(txin.scriptSig)
         elif code == 14:
+             # annex, including 0x50 prefix
              if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
                  return Element.Atom(wit[-1])
              else:
