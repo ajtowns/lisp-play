@@ -63,20 +63,6 @@ class Allocator:
         #self.freed[w] = self.allocated[w]
         del self.allocated[w]
 
-class Function:
-    def __init__(self):
-        pass # setup internal state
-
-    def abandon(self):
-        return [] # return list of elements to abandon
-
-    def resolve(self, el):
-        el.set_error("resolve unimplemented")
-        return None
-
-    def set_error_open_list(self, el):
-        el.set_error("program specified as open list (non-nil terminator)")
-
 ALLOCATOR = Allocator()
 
 # kinds
@@ -357,7 +343,31 @@ class Tree:
                 x = Element.Cons(el, x)
         return x
 
+# we have two sorts of FUNC Element:
+#  - fn_foo which subclasses Function directly which is for
+#    internal handling
+#  - op_foo which subclasses Operator which is for opcodes,
+#    and handles one operand at a time in order to allow
+#    the (partial ...) opcode to work
+
+class Function:
+    def __init__(self):
+        pass # setup internal state
+
+    def abandon(self):
+        return [] # return list of elements to abandon
+
+    def resolve(self, el):
+        el.set_error("resolve unimplemented")
+        return None
+
+    def set_error_open_list(self, el):
+        el.set_error("program specified as open list (non-nil terminator)")
+
 class fn_tree(Function):
+    """for lazily constructing a minimal binary tree from elements in
+       a list"""
+
     @classmethod
     def merge_one(cls, treeish):
         if treeish.kind != CONS: return None
@@ -574,6 +584,39 @@ class fn_eval_list(Function):
             el.replace(CONS, head, tail)
             return None
 
+# Probably want some variants of Operator?
+#   ability to have a hidden "state" Element or not (cat, substr, etc?)
+#     ie func( cons( state, args ), self )
+#     maybe it should always have a state, and just use nil if not
+#     needed? then optimise it later if desired?
+#   not everything needs the operand resolved to atom/cons:
+#     op_a just passes the first argument to fn_eval, and the rest
+#       to op_tree. which is a super intriguing thing to think about
+#       wrt partial becoming an optimisation? not sure if op_tree is
+#       correct for its state having multiple references? it's also
+#       currently fn_tree
+# Functionality
+#   three functions can be called:
+#      __init__() -- setup state
+#      argument() -- passes in an atom/cons for processing
+#      finish()   -- indicates all arguments have been passed in and
+#                   the nil end of list has been reacheda
+#   responses from finish():
+#      update el (currently by returning it, which is lame)
+#      or return a list which is used to update el (also lame)
+#   responses from argument():
+#      currently nothing, but probably should be able to say "skip
+#        next argument (if present)" so (i c t e) can skip t or e
+#        and (sf n p) can skip p depending on n, etc?
+#        -- want to query a bool as to whether `el` needs evaluating...
+#      should also be able to say "replace me with x", for (c x y z),
+#        since that's cons(x, cons(y, z)) so by the time you see y
+#        you can spit out cons(x, [something])
+#        no -- i think should be able to say "skip remaining arguments"
+#        but that just results in the argument list being evaluated until
+#        the nil terminator (with error if non-nil term), and the replacement
+#        still happening in finish()
+
 class Operator(Function):
     state = 0
     def __init__(self):
@@ -588,6 +631,21 @@ class Operator(Function):
         # return the result
         raise Exception("BUG: finish unimplemented")
 
+    def finalize(self, el):
+        fin = self.finish()
+        if isinstance(fin, list):
+            newenv, program = fin
+            el.replace(FUNC, Element.Cons(program, newenv), fn_eval())
+        else:
+            assert fin._refs > 0
+            if fin._refs == 1:
+                el.replace(fin.kind, fin.val1, fin.val2)
+                ALLOCATOR.realloc(fin.alloc_size(), 24, fin)
+                fin.set(ATOM, 0, 0)
+                fin.deref()
+            else:
+                el.replace(REF, fin)
+
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
         r = check_complete(el.val1, {CONS: ({ATOM: None, CONS: None}, None), ATOM: None})
@@ -599,19 +657,7 @@ class Operator(Function):
 
         if ATOM in r:
             if r[ATOM].is_nil():
-                fin = self.finish()
-                if isinstance(fin, list):
-                    newenv, program = fin
-                    el.replace(FUNC, Element.Cons(program, newenv), fn_eval())
-                else:
-                    assert fin._refs > 0
-                    if fin._refs == 1:
-                        el.replace(fin.kind, fin.val1, fin.val2)
-                        ALLOCATOR.realloc(fin.alloc_size(), 24, fin)
-                        fin.set(ATOM, 0, 0)
-                        fin.deref()
-                    else:
-                        el.replace(REF, fin)
+                self.finalize(el)
             else:
                 self.set_error_open_list(el)
             ALLOCATOR.record_work(30)
