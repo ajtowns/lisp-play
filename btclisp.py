@@ -823,30 +823,42 @@ class op_c(Operator):
     # (c head tail), (c h1 h2 h3 tail)
     # this may mean you often want to have "nil" as the last arg,
     # if you're constructing a list from scratch
+    # ... really this should be (c head . tail) or (c h1 h2 h3 . tail)
+    # ... because (a) you skip specifying nil, (b) adding a dot is nbd,
+    # ... (c) it's more aligned with (q), (d) it's easier to code, (e)
+    # ... it's slightly more efficient
 
-    res = None
-    last_cons = None
+    def resolve(self, el):
+        assert el.kind == FUNC and el.val2 is self
+        r = check_complete(el.val1,
+            {CONS: (None, {ATOM: None, CONS: None}),
+             ATOM: None})
+        if True in r:
+            return r[True]
+        if False in r:
+            el.replace(REF, r[False])
+            return None
 
-    def argument(self, el):
-        if self.res is None:
-            self.res = el
-        elif self.last_cons is None:
-            self.res = self.last_cons = Element.Cons(self.res, el)
+        open_list = False
+        if ATOM in r:
+            open_list = not r[ATOM].is_nil()
+        elif ATOM in r[CONS,2]:
+            open_list = not r[CONS,2][ATOM].is_nil()
+
+        if open_list:
+            self.set_error_open_list(el)
+            assert False
+        elif ATOM in r:
+            el.replace(REF, Element.Atom(0))
+        elif ATOM in r[CONS,2]:
+            assert isinstance(r[CONS,1][0], Element)
+            el.replace(REF, r[CONS,1][0].bumpref())
         else:
-            self.last_cons.val2 = Element.Cons(self.last_cons.val2, el)
-            self.last_cons = self.last_cons.val2
-
-    def finish(self):
-        if self.res is None:
-            return Element.Atom(0)
-        r = self.res
-        self.res = None
-        return r
-
-    def abandon(self):
-       if self.res is not None:
-           return [self.res]
-       return []
+            assert isinstance(r[CONS,1][0], Element)
+            assert isinstance(r[CONS,2][CONS], Element)
+            el.replace(CONS, r[CONS,1][0].bumpref(), Element.Func(r[CONS,2][CONS].bumpref(), op_c()))
+        ALLOCATOR.record_work(30)
+        return None
 
 class op_nand(Operator):
     # aka are any false?
@@ -1214,7 +1226,7 @@ class op_tx(Operator):
             which = None
         elif el.is_cons():
             if not el.val1.is_atom() or not el.val2.is_atom():
-                raise Exception("tx: expects atoms or pairs of atoms")
+                raise Exception("tx: expects atoms or pairs of atoms")  ### XXX needs better resolution :(
             code = el.val1.atom_as_u64()
             which = el.val2.atom_as_u64()
         result = self.get_tx_info(code, which)
@@ -1755,7 +1767,11 @@ rep("(+ 7 '3)")
 rep("(a '(+ 7 '3))")
 rep("(a '(+ 7 '3) 1)")
 rep("(a '(+ 7 '3) '((1 . 2) . (3 . 4)))")
-rep("(c 1 ())")
+rep("(c)")
+rep("(c . 1)")
+rep("(c nil)")
+rep("(c 1)")
+rep("(c 1 nil)")
 rep("(c 4 ())")
 rep("(c 4 6 5 7 nil)")
 #rep("(- '77 (* '3 (/ '77 '3)))")
@@ -1811,7 +1827,7 @@ rep("(a 1 (c '15000 '1 1))")
 # sum factorial (+ 1! 2! 3! 4! ... n!)
 # (proxy for (sha256 1! 2! .. n!)
 # f 1 1 n
-# f a! a b = 
+# f a! a b =
 # 4=fn 6=(a-1)! 5=a 7=left!
 
 rep = Rep(SExpr.parse("(a (i 7 '(c (c nil 6) (a 4 4 (* 6 5) (+ 5 '1) (- 7 '1))) '(c nil)))"))
