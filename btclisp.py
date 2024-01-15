@@ -418,24 +418,22 @@ class fn_tree(Function):
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
         # CONS( nil|cons(cons(atom,none)) , nil|cons(none,none) )
-        r = check_complete(el.val1,
-               {CONS: (None, {ATOM: None, CONS: None})}
-            )
-        if True in r:
-            return r[True]
-        if False in r:
-            el.replace(REF, r[False])
+        r = check_complete(el.val1, xCO(xANY(), xATCO(xANY(), xANY())))
+        if r.want is not None:
+            return r.want
+        if r.err is not None:
+            el.replace(REF, r.err)
             return None
-        if ATOM in r[CONS,2]:
-            if r[CONS,2][ATOM].is_nil():
+        if r.right.el.is_atom():
+            if r.right.el.is_nil():
                 self.collapse(el)
             else:
                 self.set_error_open_list(el)
             return None
         else:
-            sofar = el.val1.val1.bumpref()
-            add = Element.Cons(Element.Atom(0), r[CONS,2][CONS].val1.bumpref())
-            later = r[CONS,2][CONS].val2.bumpref()
+            sofar = r.left.el.bumpref()
+            add = Element.Cons(Element.Atom(0), r.right.left.el.bumpref())
+            later = r.right.right.el.bumpref()
             new = Element.Cons( Element.Cons(add, sofar), later)
             el.replace_func_state(new)
             self.merge(el)
@@ -448,63 +446,82 @@ def __check_complete(el, spec):
     print(f"from {el} looking for {spec} got {r}")
     return r
 
-def check_complete(el, spec):
-    fin = {}
-    queue = [(el, spec, fin)]
+class xANY:
+    err = None
+    want = None
+
+    def __str__(self):
+        return f"{self.__class__} {self.err} {self.want} {getattr(self, 'el', None)}"
+    def ok(self, el): return True
+    def set(self, el):
+        self.el = el
+        return self.sub()
+    def sub(self): return []
+
+    def set_error(self, err):
+        self.err = err
+    def set_want(self, want):
+        self.want = want
+
+class xAT(xANY):
+    def ok(self, el): return el.kind == ATOM
+
+class xATCO(xANY):
+    def ok(self, el): return el.kind == CONS or el.kind == ATOM
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+    def sub(self):
+        if self.el.kind == CONS:
+            return [(self.left, self.el.val1), (self.right, self.el.val2)]
+        else:
+            return []
+
+class xCO(xATCO):
+    def ok(self, el): return el.kind == CONS
+
+def check_complete(el, basespec):
+    orig = el
+    queue = [(basespec, el)]
     while queue:
-        el, spec, result = queue.pop(0)
-        if spec is None:
-            result[0] = el
-            continue
-        elcmp = el.get_complete()
-        if elcmp is None:
-            return {True: el}
-        if elcmp.kind == ERROR:
-            return {False: el.bumpref()}
-        valid = spec.keys() if isinstance(spec, dict) else [spec]
-        if elcmp.kind not in valid:
-            return {False: Element.Error("unexpected kind")}
-        k = elcmp.kind
-        v = spec[k] if isinstance(spec, dict) else None
-        result[k] = elcmp
-        if k == ATOM:
-            assert v is None
-        elif v is not None:
-            if isinstance(v, (tuple, list)):
-                assert len(v) == 2
-                result[k,1] = {}
-                result[k,2] = {}
-                queue.append( (elcmp.val1, v[0], result[k,1]) )
-                queue.append( (elcmp.val2, v[1], result[k,2]) )
-            else:
-                result[k,1] = {}
-                queue.append( (elcmp.val1, v, result[k,1]) )
-    return fin
+        spec, el = queue.pop(0)
+        if not spec.ok(el):
+            elcmp = el.get_complete()
+            if elcmp is None:
+                basespec.set_want(el)
+                break
+            elif elcmp.kind == ERROR:
+                basespec.set_error(elcmp.bumpref())
+                break
+            elif not spec.ok(elcmp):
+                basespec.set_error(Element.Error(f"unexpected kind {elcmp.kind} {spec.__class__.__name__} {elcmp} from {orig} line {sys._getframe(1).f_lineno}"))
+                break
+            el = elcmp
+        queue.extend(spec.set(el))
+    return basespec
 
 class fn_eval(Function):
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
         r = check_complete(el.val1,
-               {CONS: (
-                  {ATOM: None,
-                   CONS: ({ATOM: None, CONS: None}, None)},
-                  None)}
-            )
-        if True in r:
-            return r[True]
-        if False in r:
-            el.replace(REF, r[False])
+                xCO(xATCO(xATCO(xANY(), xANY()), xANY()), xANY())
+        )
+
+        if r.want is not None:
+            return r.want
+        if r.err is not None:
+            el.replace(REF, r.err)
             return None
 
-        if ATOM in r[CONS,1]:
+        if r.left.el.is_atom():
             # CONS(ATOM,None)  -- env lookup (0->nil; 1->env; 1+->split env)
-            return self.env_access(el, r[CONS,1][ATOM], r[CONS,2][0])
-        elif ATOM in r[CONS,1][CONS,1]:
+            return self.env_access(el, r.left.el, r.right.el)
+        elif r.left.left.el.is_atom():
             # CONS(CONS(ATOM,None),None) -- program lookup
-            return self.eval_opcode(el, r[CONS,1][CONS,1][ATOM], r[CONS,1][CONS,2][0], r[CONS,2][0])
+            return self.eval_opcode(el, r.left.left.el, r.left.right.el, r.right.el)
         else:
             # CONS(CONS(CONS,None),None) -- eval program to determine program
-            return self.eval_op_program(el, r[CONS,1][CONS,1][CONS], r[CONS,1][CONS,2][0], r[CONS,2][0])
+            return self.eval_op_program(el, r.left.left.el, r.left.right.el, r.right.el)
 
     def env_access(self, el, exp, env):
         assert exp.kind == ATOM
@@ -564,23 +581,25 @@ class fn_eval(Function):
 class fn_eval_list(Function):
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, {CONS: ({CONS: None, ATOM: None}, None)})
-        if True in r:
-            return r[True]
-        if False in r:
-            el.replace(REF, r[False])
+        r = check_complete(el.val1, xCO(xATCO(xANY(), xANY()), xANY()))
+
+        if r.want is not None:
+            return r.want
+        if r.err is not None:
+            el.replace(REF, r.err)
             return None
-        if ATOM in r[CONS,1]:
-            if r[CONS,1][ATOM].is_nil():
-                el.replace(REF, r[CONS,1][ATOM].bumpref())
+
+        if r.left.el.is_atom():
+            if r.left.el.is_nil():
+                el.replace(REF, r.left.el.bumpref())
             else:
                 self.set_error_open_list(el)
             return None
         else:
-            env = r[CONS,2][0]
-            c = r[CONS,1][CONS]
-            head = Element.Func(Element.Cons(c.val1.bumpref(), env.bumpref()), fn_eval())
-            tail = Element.Func(Element.Cons(c.val2.bumpref(), env.bumpref()), fn_eval_list())
+            env = r.right.el
+            a,b = r.left.left.el, r.left.right.el
+            head = Element.Func(Element.Cons(a.bumpref(), env.bumpref()), fn_eval())
+            tail = Element.Func(Element.Cons(b.bumpref(), env.bumpref()), fn_eval_list())
             el.replace(CONS, head, tail)
             return None
 
@@ -623,6 +642,9 @@ class Operator(Function):
         # do any special setup
         pass
 
+    def argspec(self, argspec):
+        return self.argument(argspec.el)
+
     def argument(self, el):
         # handle an argument
         raise Exception("BUG: argument handling unimplemented")
@@ -646,34 +668,37 @@ class Operator(Function):
             else:
                 el.replace(REF, fin)
 
+    def resolve_spec(self):
+        return xATCO(xANY(), xANY())
+
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, {CONS: ({ATOM: None, CONS: None}, None), ATOM: None})
-        if True in r:
-            return r[True]
-        if False in r:
-            el.replace(REF, r[False])
+        r = check_complete(el.val1, xATCO(self.resolve_spec(), xANY()))
+        if r.want is not None:
+            return r.want
+        if r.err is not None:
+            el.replace(REF, r.err)
             return None
 
-        if ATOM in r:
-            if r[ATOM].is_nil():
+        if r.el.is_atom():
+            if r.el.is_nil():
                 self.finalize(el)
             else:
                 self.set_error_open_list(el)
             ALLOCATOR.record_work(30)
             return None
         else:
-            h = r[CONS,1][CONS] if CONS in r[CONS,1] else r[CONS,1][ATOM]
-            t = r[CONS,2][0]
-            assert h._refs > 0
-            h.bumpref()
+            hspec = r.left
+            t = r.right.el
+            hspec.el.bumpref()
             try:
-                self.argument(h)
+                self.argspec(hspec)
                 el.replace_func_state(t.bumpref())
             except AssertionError:
                 raise # This is a bug, so don't worry about memory management
             except Exception as exc:
-                h.deref() # Buggy to throw an exception after deref'ing, fine to throw beforehand
+                if exc.__class__ != Exception: raise
+                hspec.el.deref() # Buggy to throw an exception after deref'ing, fine to throw beforehand
                 if len(str(exc)) <= 8: raise exc
                 el.set_error(str(exc))
             return None
@@ -699,22 +724,22 @@ class op_a(Operator):
     def resolve(self, el):
         # (env app tree...)
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, {CONS: (None, {CONS: (None, {ATOM: None, CONS: None})})})
-        if True in r:
-            return r[True]
-        if False in r:
-            el.replace(REF, r[False])
+        r = check_complete(el.val1, xCO(xANY(), xCO(xANY(), xATCO(xANY(), xANY()))))
+        if r.want is not None:
+            return r.want
+        if r.err is not None:
+            el.replace(REF, r.err)
             return None
-        env = r[CONS,1][0]
-        program = r[CONS,2][CONS,1][0]
-        if ATOM in r[CONS,2][CONS,2]:
-            if r[CONS,2][CONS,2][ATOM].is_nil():
+        env = r.left.el
+        program = r.right.left.el
+        if r.right.right.el.is_atom():
+            if r.right.right.el.is_nil():
                 el.replace(FUNC, Element.Cons(program.bumpref(), env.bumpref()), fn_eval())
             else:
                 el.set_error_open_list(el)
             return None
 
-        tree_args = Element.Cons(Element.Atom(0), r[CONS,2][CONS,2][CONS].bumpref())
+        tree_args = Element.Cons(Element.Atom(0), r.right.right.el.bumpref())
         tree = Element.Func(tree_args, fn_tree())
         el.replace(FUNC, Element.Cons(program.bumpref(), tree), fn_eval())
         return None
@@ -830,33 +855,28 @@ class op_c(Operator):
 
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1,
-            {CONS: (None, {ATOM: None, CONS: None}),
-             ATOM: None})
-        if True in r:
-            return r[True]
-        if False in r:
-            el.replace(REF, r[False])
+        r = check_complete(el.val1, xATCO(xANY(), xATCO(xANY(), xANY())))
+        if r.want is not None:
+            return r.want
+        if r.err is not None:
+            el.replace(REF, r.err)
             return None
 
         open_list = False
-        if ATOM in r:
-            open_list = not r[ATOM].is_nil()
-        elif ATOM in r[CONS,2]:
-            open_list = not r[CONS,2][ATOM].is_nil()
+        if r.el.is_atom():
+            open_list = not r.el.is_nil()
+        elif r.right.el.is_atom():
+            open_list = not r.right.el.is_nil()
 
         if open_list:
             self.set_error_open_list(el)
             assert False
-        elif ATOM in r:
+        elif r.el.is_atom():
             el.replace(REF, Element.Atom(0))
-        elif ATOM in r[CONS,2]:
-            assert isinstance(r[CONS,1][0], Element)
-            el.replace(REF, r[CONS,1][0].bumpref())
+        elif r.right.el.is_atom():
+            el.replace(REF, r.left.el.bumpref())
         else:
-            assert isinstance(r[CONS,1][0], Element)
-            assert isinstance(r[CONS,2][CONS], Element)
-            el.replace(CONS, r[CONS,1][0].bumpref(), Element.Func(r[CONS,2][CONS].bumpref(), op_c()))
+            el.replace(CONS, r.left.el.bumpref(), Element.Func(r.right.el.bumpref(), op_c()))
         ALLOCATOR.record_work(30)
         return None
 
@@ -1217,22 +1237,22 @@ class op_tx(Operator):
         self.r = None
         self.last_cons = None
 
-    def argument(self, el):
-        # el is either an atom giving info about the tx as a whole
-        # or a pair of what info is requested, plus what input/output idx
-        #  we want info about
-        if el.is_atom():
-            code = el.atom_as_u64()
+    def resolve_spec(self):
+        # each arg should be either an atom, or a pair of atoms
+        return xATCO(xAT(), xAT())
+
+    def argspec(self, argspec):
+        if argspec.el.is_atom():
+            code = argspec.el.atom_as_u64()
             which = None
-        elif el.is_cons():
-            if not el.val1.is_atom() or not el.val2.is_atom():
-                raise Exception("tx: expects atoms or pairs of atoms")  ### XXX needs better resolution :(
-            code = el.val1.atom_as_u64()
-            which = el.val2.atom_as_u64()
+        else:
+            code = argspec.left.el.atom_as_u64()
+            which = argspec.right.el.atom_as_u64()
         result = self.get_tx_info(code, which)
         if self.r is None:
             self.r = result
         elif self.last_cons is None:
+            # XXX should release this progressively like op_c
             self.last_cons = Element.Cons(result, Element.Atom(0))
             self.r = Element.Cons(self.r, self.last_cons)
         else:
@@ -1241,7 +1261,7 @@ class op_tx(Operator):
             assert self.last_cons.val2.val2 == 0
             self.last_cons.val2 = Element.Cons(result, self.last_cons.val2)
             self.last_cons = self.last_cons.val2
-        el.deref()
+        argspec.el.deref()
 
     def get_tx_info(self, code, which):
         if 0 <= code <= 9:
@@ -1673,7 +1693,7 @@ def lazy_eval(env, sexpr, debug):
         x = work.val2.resolve(work)
         if ALLOCATOR.over_limit(): break
         if x is not None:
-            assert isinstance(x, Element)
+            assert isinstance(x, Element), f"non-none,non-element {x} {work.val2}"
             stack.append((False, x))
 
     if ALLOCATOR.over_limit():
