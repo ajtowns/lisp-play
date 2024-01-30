@@ -8,6 +8,7 @@ import time
 import verystable.core.key
 import verystable.core.messages
 import verystable.core.script
+import verystable.core.secp256k1
 
 class Allocator:
     """simple object to monitor how much space is used up by
@@ -361,8 +362,8 @@ class Function:
         el.set_error("resolve unimplemented")
         return None
 
-    def set_error_open_list(self, el):
-        el.set_error("program specified as open list (non-nil terminator)")
+    def set_error_open_list(self, el, what="program"):
+        el.set_error(f"{what} specified as open list (non-nil terminator)")
 
 class fn_tree(Function):
     """for lazily constructing a minimal binary tree from elements in
@@ -428,7 +429,7 @@ class fn_tree(Function):
             if r.right.el.is_nil():
                 self.collapse(el)
             else:
-                self.set_error_open_list(el)
+                self.set_error_open_list(el, "tree")
             return None
         else:
             sofar = r.left.el.bumpref()
@@ -590,10 +591,7 @@ class fn_eval_list(Function):
             return None
 
         if r.left.el.is_atom():
-            if r.left.el.is_nil():
-                el.replace(REF, r.left.el.bumpref())
-            else:
-                self.set_error_open_list(el)
+            el.replace(REF, r.left.el.bumpref())
             return None
         else:
             env = r.right.el
@@ -870,7 +868,6 @@ class op_c(Operator):
 
         if open_list:
             self.set_error_open_list(el)
-            assert False
         elif r.el.is_atom():
             el.replace(REF, Element.Atom(0))
         elif r.right.el.is_atom():
@@ -1157,11 +1154,13 @@ class op_lt_lendian(op_lt_str):
 class op_sha256(Operator):
     def __init__(self):
         self.st = hashlib.sha256()
+        self.w = b""
 
     def argument(self, el):
         if not el.is_atom():
             raise Exception("sha256: cannot hash list")
         self.st.update(el.atom_as_bytes())
+        self.w += el.atom_as_bytes()
         ALLOCATOR.record_work((el.val2 + 63)//64 * 256)
         el.deref()
 
@@ -1182,6 +1181,68 @@ class op_hash256(op_sha256):
         ALLOCATOR.record_work(256)
         return Element.Atom(x.digest())
 
+class op_secp256k1_muladd(Operator):
+    """(secp256k1_muladd a (b) (c . d) (1 . e) (nil . f))
+       checks that a*G - b*G + c*D + E - F = 0
+       Script aborts otherwise.
+
+       That is, an atom on its own is interpreted as a scalar and
+       multiplied by G; a cons pair is interpreted as a scalar followed
+       by a point; if the point is nil, it is interpreted as -G; if the
+       scalar is nil, it is treated as -1.
+
+       Scalars are interpreted as little endian. 33-byte values for the
+       point are treated as compressed points, 32-byte values for the
+       points are evaluated via BIP340's lift_x().
+
+       BIP340 validation is thus equivalent to:
+           (secp256k1_muladd ('1 . R) (e . P) (s))
+       where e is H(R,P,m) as per BIP340.
+    """
+
+    def __init__(self):
+        self.aps = []
+
+    def resolve_spec(self):
+        # each arg should be either an atom, or a pair of atoms
+        return xATCO(xAT(), xAT())
+
+    def argspec(self, argspec):
+        if argspec.el.is_atom():
+            ### XXX we use big-endian integers here, not little!!
+            b = argspec.el.atom_as_bytes()
+            if len(b) > 32: raise Exception("secp256k1_muladd: int out of range")
+            val = int.from_bytes(b, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
+            pt = verystable.core.secp256k1.G
+        else:
+            b = argspec.left.el.atom_as_bytes()
+            if len(b) > 32: raise Exception("secp256k1_muladd: int out of range")
+            if argspec.left.el.val2 == 0:
+                val = verystable.core.secp256k1.FE.SIZE - 1
+            else:
+                val = int.from_bytes(b, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
+
+            b = argspec.right.el.atom_as_bytes()
+            if len(b) == 32:
+                pt = verystable.core.secp256k1.GE.from_bytes_xonly(b)
+            elif len(b) == 33:
+                pt = verystable.core.secp256k1.GE.from_bytes(b)
+            elif len(b) == 0:
+                pt = -verystable.core.secp256k1.G
+            else:
+                raise Exception("secp256k1_muladd: point out of range")
+            if pt is None:
+                raise Exception("secp256k1_muladd: invalid point")
+        self.aps.append((val, pt))
+        argspec.el.deref()
+
+    def finish(self):
+        x = verystable.core.secp256k1.GE.mul(*self.aps)
+        if not x.infinity:
+            print("XXX muladd", [(a, p.to_bytes_compressed().hex()) for (a,p) in self.aps])
+            return Element.Error(f"secp256k1_muladd: did not sum to inf {x.to_bytes_compressed().hex()}")
+        return Element.Atom(1)
+
 class op_bip340_verify(Operator):
     def __init__(self):
         self.args = []
@@ -1195,6 +1256,7 @@ class op_bip340_verify(Operator):
             raise Exception("bip340_verify: too many arguments")
 
     def finish(self):
+        # XXX probably buggy to raise without freeing pk/m/sig?
         if len(self.args) != 3:
             raise Exception("bip340_verify: too few arguments")
         pk, m, sig = self.args
@@ -1202,10 +1264,14 @@ class op_bip340_verify(Operator):
             r = False
         else:
             r = verystable.core.key.verify_schnorr(key=pk.val1, sig=sig.val1, msg=m.val1)
+        fail = (not r and sig.val2 != 0)
         pk.deref()
         m.deref()
         sig.deref()
-        return Element.Atom(r)
+        if fail:
+            return Element.Error("bip340_verify: invalid, non-empty signature")
+        else:
+            return Element.Atom(r)
 
 class op_bip342_txmsg(Operator):
     def __init__(self):
@@ -1280,6 +1346,22 @@ class op_tx(Operator):
         else:
             raise Exception(f"tx: {code} out of range")
 
+    def get_bip341info(self):
+        wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
+        n = len(wit) - 1
+        if n > 0 and wit[n][0] == 0x50: n -= 1 # skip annex
+        if n <= 0 or len(wit[n]) == 0: return None, None # key spend, or no witness data
+
+        cb = wit[n]
+        leafver = cb[0] & 0xFE
+        sign = cb[0] & 0x01
+        if len(cb) % 32 == 1:
+            ipk = cb[1:33]
+            path = [cb[i:i+32] for i in range(33, len(cb), 32)]
+        else:
+            ipk = path = None
+        return leafver, sign, ipk, path
+
     def get_tx_global_info(self, code):
         if code == 0:
             return Element.Atom(GLOBAL_TX.nVersion, 4)
@@ -1305,6 +1387,12 @@ class op_tx(Operator):
                 return Element.Atom(h)
             else:
                 return Element.Atom(0)
+        elif code == 7:
+            # taproot internal pubkey
+            raise Exception("unimplemented")
+        elif code == 8:
+            # taproot merkle path
+            raise Exception("unimplemented")
         # should also be able to pull out control block information,
         # eg merkle path and internal pubkey
         else:
@@ -1361,9 +1449,14 @@ FUNCS = [
      ## can be continued by being used as an opcode, or be another op_partial
      ## means i need to make argument()/finish() the standard way of doing
      ## "everything" though?
+     ## XXX note that this implies the ability to deep-copy the state of
+     ## any functions that are partial'ed
   (0x02, "x", op_x),  # exception
   (0x03, "i", op_i),  # eager-evaluated if
   (0x04, "sf", op_softfork),
+     ## should this be magic as in (sf '99 (+ 3 4)) treats "+" according
+     ## to "99" softfork rules, or should it be more like (a '(+ 3 4))
+     ## where you're expected to quote it first?
 
   (0x05, "c", op_c), # construct a list, last element is a list
   (0x06, "h", op_h), # head / car
@@ -1408,7 +1501,7 @@ FUNCS = [
   (0x27, "hash256", op_hash256),
   (0x28, "bip340_verify", op_bip340_verify),
 #  (0x29, "ecdsa_verify", op_ecdsa_verify),
-#  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
+  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
 
   (0x2b, "tx", op_tx),
   (0x2c, "bip342_txmsg", op_bip342_txmsg),
@@ -1930,6 +2023,41 @@ rep("(bip342_txmsg)")
 rep("(a '(sha256 4 4 '0x00 6 3) (sha256 '\"TapSighash\") (cat '0x00 (tx '0) (tx '1) (sha256 (a 1 1 '(cat (tx (c '11 1)) (tx (c '12 1))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '15 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(a '(cat (strlen 1) 1) (tx '(16 . 0))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '10 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(cat (tx (c '20 1)) (a '(cat (strlen 1) 1) (tx (c '21 1)))) '0 (tx '3) 'nil)) (i (tx '14) '0x03 '0x01) (substr (cat (tx '4) '0x00000000) 'nil '4) (i (tx '14) (sha256 (a '(cat (strlen 1) 1) (tx '14))) 'nil)) (cat (tx '6) '0x00 '0xffffffff))")
 
 rep("(cat '0x1122 '0x3344)")
+
+rep("(secp256k1_muladd)")
+rep("(secp256k1_muladd '1)")
+rep("(secp256k1_muladd '(1))")
+rep("(secp256k1_muladd '1 '(1))")
+
+
+# (defun bip340check (R s e P) `(secp256k1_muladd ('1 . ,R) (,e . ,P) (,s)))
+# (defun mkR (sig) `(substr ,sig 0 '32))
+# (defun mkS (sig) `(substr ,sig '32 '64))
+# (defun taghash (tag) `(a '(cat 1 1) (sha256 ,tag))
+# (defun mkE (R P m) `(sha256 (taghash "BIP0340/challenge") ,R ,P ,m)
+# (defun mybip340x (R s P m)
+#        `(bip340check ,R ,s (mkE ,R ,P ,m) ,P))
+# (defun mybip340 (sig P m) `(mybip340x (mkR ,sig) (mkS ,sig) ,P ,m)
+
+bip340check = "(secp256k1_muladd (c '1 4) (c 5 7) (c 6 nil))"
+  # expects R s e P
+mkE = "(sha256 (a '(cat 1 1) (sha256 '\"BIP0340/challenge\")) 4 6 3)"
+  # expects R p m
+mybip340x = "(a 5 8 12 (a 7 8 10 14) 10)"
+  # expects R s P m bip340check mkE
+mybip340 = "(a 7 (substr 8 0 '32) (substr 8 '32 '64) 12 10 14 5)"
+  # expects sig P m bip340check mkE mybip340x
+sexpr = "((%s . %s) . (%s . %s))" % (bip340check, mkE, mybip340x, mybip340)
+print(f"env={sexpr}")
+rep = Rep(SExpr.parse(sexpr))
+  # usage: (a 7 SIG P M 4 6 5)
+
+# P = F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9
+# m = 0000000000000000000000000000000000000000000000000000000000000000
+# sig = E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0
+
+rep("1")
+rep("(a 7 '0xE907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0 '0xF9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9 '0x0000000000000000000000000000000000000000000000000000000000000000 4 6 5)")
 
 
 # levels:
