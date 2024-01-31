@@ -193,8 +193,8 @@ class Element:
     @classmethod
     def Atom(cls, data, length=None):
         if length is not None:
-            assert isinstance(data, int) and data > 0 and data <= 0xFFFF_FFFF_FFFF_FFFF
-            assert length >= (data.bit_length() + 7) // 8
+            assert isinstance(data, int) and data >= 0 and data <= 0xFFFF_FFFF_FFFF_FFFF
+            assert data == 0 or length >= (data.bit_length() + 7) // 8
             assert length <= 8
             if length == 0: return cls.Nil()
             if length == 1 and data == 1: return cls.One()
@@ -734,7 +734,7 @@ class op_a(Operator):
             if r.right.right.el.is_nil():
                 el.replace(FUNC, Element.Cons(program.bumpref(), env.bumpref()), fn_eval())
             else:
-                el.set_error_open_list(el)
+                self.set_error_open_list(el)
             return None
 
         tree_args = Element.Cons(Element.Atom(0), r.right.right.el.bumpref())
@@ -752,6 +752,33 @@ class op_x(Operator):
         raise Exception(" ".join(self.x))
 
 class op_i(Operator):
+    def resolve_spec(self):
+        # each arg should be either an atom, or a pair of atoms
+        if self.state == 0:
+            return xATCO(xANY(), xANY())
+        else:
+            return xANY()
+
+    def argspec(self, argspec):
+        if self.state == 0:
+            self.then = not argspec.el.is_nil()
+            argspec.el.deref()
+        elif self.state == 1:
+            if self.then:
+                self.result = argspec.el
+            else:
+                self.result = Element.Atom(0)
+                argspec.el.deref()
+        elif self.state == 2:
+            if not self.then:
+                self.result.deref()
+                self.result = argspec.el
+            else:
+                argspec.el.deref()
+        else:
+            raise Exception("i: too many arguments")
+        self.state += 1
+
     def argument(self, el):
         if self.state == 0:
             self.then = not el.is_nil()
@@ -771,6 +798,7 @@ class op_i(Operator):
         else:
             raise Exception("i: too many arguments")
         self.state += 1
+
     def finish(self):
         if self.state == 0:
             raise Exception("i: must provide condition argument")
@@ -778,6 +806,7 @@ class op_i(Operator):
             raise Exception("i: must provide then argument")
         self.state = -1 # done!
         return self.result
+
     def abandon(self):
        if self.state > 1:
            return [self.result]
@@ -1006,10 +1035,18 @@ class op_substr(Operator):
             if self.end >= el.val2: return el
         if self.end is None:
             self.end = el.val2
+        if self.start > el.val2:
+            el.deref()
+            return Element.Atom(0)
         if el.val2 <= 8:
             m = 0xFFFF_FFFF_FFFF_FFFF
             n = el.val1
-            s = Element.Atom(((m^(m<<(self.end*8))) & n) >> (self.start*8), self.end-self.start)
+            assert n <= m
+            q = ((m^(m<<(self.end*8))) & n) >> (self.start*8)
+            assert 0 <= q
+            assert q <= m
+            print("XXX", hex(q), self.end-self.start)
+            s = Element.Atom(q, self.end-self.start)
         else:
             s = Element.Atom(el.val1[self.start:self.end])
         el.deref()
@@ -1062,6 +1099,45 @@ class op_mod_u64(Operator):
     def finish(self):
         return Element.Atom(self.i)
 
+class op_and_u64(Operator):
+    def __init__(self):
+        self.i = 0xFFFF_FFFF_FFFF_FFFF
+        self.state = 0
+
+    def argument(self, el):
+        if not el.is_atom(): raise Exception("and: arguments must be atoms")
+        self.i &= el.atom_as_u64()
+        el.deref()
+
+    def finish(self):
+        return Element.Atom(self.i)
+
+class op_or_u64(Operator):
+    def __init__(self):
+        self.i = 0
+        self.state = 0
+
+    def argument(self, el):
+        if not el.is_atom(): raise Exception("or: arguments must be atoms")
+        self.i |= el.atom_as_u64()
+        el.deref()
+
+    def finish(self):
+        return Element.Atom(self.i)
+
+class op_xor_u64(Operator):
+    def __init__(self):
+        self.i = 0
+        self.state = 0
+
+    def argument(self, el):
+        if not el.is_atom(): raise Exception("xor: arguments must be atoms")
+        self.i ^= el.atom_as_u64()
+        el.deref()
+
+    def finish(self):
+        return Element.Atom(self.i)
+
 class op_sub_u64(Operator):
     def __init__(self):
         self.i = None
@@ -1074,7 +1150,7 @@ class op_sub_u64(Operator):
             self.i = n
         else:
             self.i -= n
-            self.i %= 0x1_0000_0000_0000_0000
+            self.i %= 0x1_0000_0000_0000_0000 # turns negatives back to positive
 
     def finish(self):
         if self.i is None:
@@ -1473,19 +1549,19 @@ FUNCS = [
   (0x0f, "substr", op_substr),
   (0x10, "cat", op_cat),
 
-#  (0x11, "~",op_bit_not),
-#  (0x12, "&", op_bit_and),
-#  (0x13, "|", op_bit_or),
-#  (0x14, "^", op_bit_xor),
+  #(0x11, "~", op_not_u64),  # bitwise nand?
+  (0x12, "&", op_and_u64),
+  (0x13, "|", op_or_u64),
+  (0x14, "^", op_xor_u64),
   (0x17, "+", op_add_u64),
   (0x18, "-", op_sub_u64),
   (0x19, "*", op_mul_u64),
   (0x1a, "%", op_mod_u64),
 #  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))
-#  (0x1d, "<<", op_lshift_u64),
-#  (0x1e, ">>", op_rshift_u64),
+#  (0x1c, "<<", op_lshift_u64),
+#  (0x1d, ">>", op_rshift_u64),
 
-  (0x1c, "<", op_lt_lendian),   # not restricted to u64
+  (0x1e, "<", op_lt_lendian),   # not restricted to u64
 #  (0x1f, "log2b42", op_log2b42_u64),  # returns floor(log_2(x) * 2**42)
       ## allow this to apply to arbitrary atoms?
       ## (log of a 500kB atoms will fit into a u64)
@@ -2060,12 +2136,40 @@ rep("1")
 rep("(a 7 '0xE907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0 '0xF9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9 '0x0000000000000000000000000000000000000000000000000000000000000000 4 6 5)")
 
 
+# control block =  c1e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1
+# script = 20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1ac0063036f726401010a746578742f706c61696e00337b2270223a226272632d3230222c226f70223a226d696e74222c227469636b223a22656f7262222c22616d74223a223130227d68
+# scriptPK = 5120 c142718fddee89867607e1eeb6e1aab685285e5c78c9ffd2f379c68d52bcb0b6
+
+taghash = "(a '(sha256 2 2 3) (sha256 2) 3)"
+  # expects tag contents
+tapleaf = "(a 3 '\"TapLeaf\" (cat 4 (strlen 6) 6))"
+  # expects v script taghash
+tapbranch =  "(a 3 '\"TapBranch\" (i (<s 4 6) (cat 4 6) (cat 6 4)))"
+  # expects a b taghash
+tappath = "(i 12 (a 5 (a 14 8 (substr 12 '0 '32) 10) (substr 12 '32) 10 14 3) (a 10 '\"TapTweak\" (cat 7 8)))"
+  # expects leaf:8 path:12 taghash:10 tapbranch:14 tappath:5 P:7
+taproot = "(secp256k1_muladd (a 9 (a 11 (& 16 '0xfe) 24 15) 12 15 13 9 10) (c '1 10) (c (& 16 '1) 14))"
+  # expects v:16 script:24 path:12 ipk:10 spk:14 tappath:9 tapbranch:13 tapleaf:11 taghash:15
+
+sexpr = "(((%s . %s) . %s) . (%s . %s))" % (taproot, taghash, tapleaf, tapbranch, tappath)
+print(f"env={sexpr}")
+rep = Rep(SExpr.parse(sexpr))
+  # usage: (a 8 '(V . SCRIPT) PATH IPK SPK 7 5 6 12)
+
+rep("(a 8 '(0xc1 . 0x20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1ac0063036f726401010a746578742f706c61696e00337b2270223a226272632d3230222c226f70223a226d696e74222c227469636b223a22656f7262222c22616d74223a223130227d68) nil '0xe9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1 '0xc142718fddee89867607e1eeb6e1aab685285e5c78c9ffd2f379c68d52bcb0b6 7 5 6 12)")
+
+# test: (secp_muladd ,tt (1 ,p) (,x ,spk))
+# tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
+# tl: (a '(sha256 1 1 ,v (strlen ,scr) ,scr) (sha256 '"TapLeaf"))
+
+
+
 # levels:
 #   bytes/hex
 #   (c (q . 1) (q . 0xCAFEBABE) (q . "hello, world") (q . nil))
 #   \' and aliases? (car,head = h, etc)
 #   symbols; let/defun (compile to env access)
-#   \` and \,  (quote and unquote / macros)
+#   \` and \,  (qq and unquote in chialisp / macros)
 
 # notation?
 #   'foo  = (q . foo)
