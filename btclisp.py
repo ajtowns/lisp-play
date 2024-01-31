@@ -1099,6 +1099,19 @@ class op_mod_u64(Operator):
     def finish(self):
         return Element.Atom(self.i)
 
+class op_nand_u64(Operator):
+    def __init__(self):
+        self.i = 0xFFFF_FFFF_FFFF_FFFF
+        self.state = 0
+
+    def argument(self, el):
+        if not el.is_atom(): raise Exception("and: arguments must be atoms")
+        self.i &= el.atom_as_u64()
+        el.deref()
+
+    def finish(self):
+        return Element.Atom(0xFFFF_FFFF_FFFF_FFFF ^ self.i)
+
 class op_and_u64(Operator):
     def __init__(self):
         self.i = 0xFFFF_FFFF_FFFF_FFFF
@@ -1549,10 +1562,13 @@ FUNCS = [
   (0x0f, "substr", op_substr),
   (0x10, "cat", op_cat),
 
-  #(0x11, "~", op_not_u64),  # bitwise nand?
+  # not really convinced these make sense as u64 (vs generic bitwise ops)
+  # (eg, (~ 0x80) becomes 0x7FFF_FFFF_FFFF_FFFF which is weird)
+  (0x11, "~", op_nand_u64),
   (0x12, "&", op_and_u64),
   (0x13, "|", op_or_u64),
   (0x14, "^", op_xor_u64),
+
   (0x17, "+", op_add_u64),
   (0x18, "-", op_sub_u64),
   (0x19, "*", op_mul_u64),
@@ -1992,6 +2008,10 @@ rep("(c (<s '255 '256) (< '255 '256) nil)")
 rep("(%)")
 rep("(% '100 '3)")
 rep("(% '100 '3 '2)")
+rep("(~ '7)")
+rep("(~)")
+rep("(~ 0)")
+rep("(~ '1 '3 '5)")
 
 # factorial
 # n=2, fn=3
