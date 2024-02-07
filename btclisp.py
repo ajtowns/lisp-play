@@ -1633,7 +1633,7 @@ class SExpr:
     re_int = re.compile("^-?\d+$")
     re_hex = re.compile("^0x[0-9a-fA-F]+$")
     re_quote = re.compile('^"[^"]*"$')
-    re_sym = re.compile('^[a-z_][a-z0-9_]*$')
+    re_sym = re.compile('^[a-z0-9_<>=~&|^+*/%-]+$')
     # re_sym doesn't match (< 1 2) and other mathsy ops
 
     @staticmethod
@@ -1656,9 +1656,22 @@ class SExpr:
         return s[m.end():], m
 
     @classmethod
+    def demacro(cls, e):
+        if e.kind == ATOM: return e
+        if e.kind == CONS:
+            l = cls.demacro(e.val1)
+            r = cls.demacro(e.val2)
+            return Element.Cons(l, r)
+        if e.kind == SYMBOL:
+            if e.val1 in SExpr_FUNCS:
+                return Element.Atom(SExpr_FUNCS[e.val1])
+            return Element.Error(f"undefined symbol {e}")
+        return Element.error(f"unexpected element {e}")
+
+    @classmethod
     def compile(cls, s):
         e = cls.parse(s, many=False)
-        return e
+        return cls.demacro(e)
 
     @classmethod
     def parse(cls, s, many=False):
@@ -1688,9 +1701,7 @@ class SExpr:
             elif g["atom"]:
                 a = g["atom"]
                 is_sym = False
-                if a in SExpr_FUNCS:
-                    a = SExpr_FUNCS[a]
-                elif a == "nil":
+                if a == "nil":
                     a = 0
                 elif cls.re_hex.match(a):
                     a = bytes.fromhex(a[2:])
@@ -2209,6 +2220,7 @@ rep = Rep(SExpr.compile(sexpr))
 rep("(a 8 '(0xc1 . 0x20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1ac0063036f726401010a746578742f706c61696e00337b2270223a226272632d3230222c226f70223a226d696e74222c227469636b223a22656f7262222c22616d74223a223130227d68) nil '0xe9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1 '0xc142718fddee89867607e1eeb6e1aab685285e5c78c9ffd2f379c68d52bcb0b6 7 5 6 12)")
 
 print(SExpr.parse("(foo bar 33)"))
+print(SExpr.compile("(foo bar 33)"))
 
 # test: (secp_muladd ,tt (1 ,p) (,x ,spk))
 # tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
