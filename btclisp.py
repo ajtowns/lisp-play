@@ -716,6 +716,23 @@ class Operator(Function):
                 el.set_error(str(exc))
             return None
 
+class op_b(Operator):
+    save = None
+    def argument(self, el):
+        if self.save is not None:
+            # (would be cool to make a tree of trees)
+            raise Exception("b: only supports one argument")
+        self.save = el
+
+    def finish(self):
+        if self.save is None: return Element.Atom(0)
+        tree_args = Element.Cons(Element.Atom(0), self.save)
+        self.save = None
+        return Element.Func(tree_args, fn_tree())
+
+    def abandon(self):
+       return [self.save] if self.save is not None else []
+
 class op_a(Operator):
     # if given multiple arguments, builds them up into a tree,
     # biased to the left
@@ -1566,6 +1583,7 @@ FUNCS = [
   (0x06, "h", op_h), # head / car
   (0x07, "t", op_t), # tail / cdr
   (0x08, "l", op_l), # is cons?
+  (0x39, "b", op_b), # convert list to binary tree
 
   (0x09, "not", op_nand),
   (0x0a, "all", op_and),
@@ -2221,6 +2239,10 @@ rep("(a 8 '(0xc1 . 0x20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39
 
 print(SExpr.parse("(foo bar 33)"))
 print(SExpr.compile("(foo bar 33)"))
+
+rep = Rep(SExpr.compile("(1 2 3 4 5 6)"))
+rep("(a '1 '1 '2 '3 '4 '5 '6)")
+rep("(b 1)")
 
 # test: (secp_muladd ,tt (1 ,p) (,x ,spk))
 # tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
