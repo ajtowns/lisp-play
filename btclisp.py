@@ -75,7 +75,7 @@ FUNC=251
 SYMBOL=250  # not needed post-macro evaluation
 
 class Element:
-    re_printable = re.compile(b"^[a-zA-Z0-9 _()<>,:'-]+$")
+    re_printable = re.compile(b"^[a-zA-Z0-9 _()<>,.\"*:'/%+-]+$")
     _nil = None
     _one = None
 
@@ -227,6 +227,14 @@ class Element:
     def Cons(cls, left, right):
         return cls(CONS, left, right)
 
+    def cons_to_pylist(self):
+        l = []
+        while self.kind == CONS:
+            l.append(self.val1)
+            self = self.val2
+        if not self.is_nil(): return None
+        return l
+
     @classmethod
     def Symbol(cls, sym):
         return cls(SYMBOL, sym)
@@ -338,6 +346,44 @@ class Tree:
     def __init__(self):
         self.tree = []
 
+    @classmethod
+    def dbl_n(cls, n, offset=0, size=0):
+        assert offset >= 0 and (offset >> size) == 0
+        r = [1]
+        while n > 0:
+            r = [a*2 for a in r] + [a*2+1 for a in r]
+            n -= 1
+        if size > 0:
+            r = [(a << size) + offset for a in r]
+        return r
+
+    @classmethod
+    def get_values(cls, n, offset=0, size=0):
+        k, v = 0,1
+        while v < n:
+            k += 1
+            v *= 2
+        values = []
+        while n > 0:
+            while v > n:
+                k -= 1
+                v //= 2
+            values.extend(cls.dbl_n(k, offset, size))
+            offset = (offset * 2) + 1
+            size += 1
+            n -= v
+        return values
+
+    @classmethod
+    def get_values_pair(cls, n1, n2):
+        if n1 == 0:
+            return [], cls.get_values(n2)
+        elif n2 == 0:
+            return cls.get_values(n1), []
+        else:
+            return (cls.get_values(n1, offset=0, size=1),
+                    cls.get_values(n2, offset=1, size=1))
+
     def add(self, element):
         i = 0
         while i < len(self.tree):
@@ -434,7 +480,7 @@ class fn_tree(Function):
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
         # CONS( nil|cons(cons(atom,none)) , nil|cons(none,none) )
-        r = check_complete(el.val1, xCO(xANY(), xATCO(xANY(), xANY())))
+        r = check_complete(el.val1, xCO(xANY(), xATCO(xANY(), xANY())), "tree")
         if r.want is not None:
             return r.want
         if r.err is not None:
@@ -496,7 +542,7 @@ class xATCO(xANY):
 class xCO(xATCO):
     def ok(self, el): return el.kind == CONS
 
-def check_complete(el, basespec):
+def check_complete(el, basespec, who):
     orig = el
     queue = [(basespec, el)]
     while queue:
@@ -510,7 +556,7 @@ def check_complete(el, basespec):
                 basespec.set_error(elcmp.bumpref())
                 break
             elif not spec.ok(elcmp):
-                basespec.set_error(Element.Error(f"unexpected kind {elcmp.kind} {spec.__class__.__name__} {elcmp} from {orig} line {sys._getframe(1).f_lineno}"))
+                basespec.set_error(Element.Error(f"unexpected kind in {who} {elcmp.kind} {spec.__class__.__name__} {elcmp} from {orig} line {sys._getframe(1).f_lineno}"))
                 break
             el = elcmp
         queue.extend(spec.set(el))
@@ -520,7 +566,8 @@ class fn_eval(Function):
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
         r = check_complete(el.val1,
-                xCO(xATCO(xATCO(xANY(), xANY()), xANY()), xANY())
+                xCO(xATCO(xATCO(xANY(), xANY()), xANY()), xANY()),
+                "eval"
         )
 
         if r.want is not None:
@@ -597,7 +644,7 @@ class fn_eval(Function):
 class fn_eval_list(Function):
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, xCO(xATCO(xANY(), xANY()), xANY()))
+        r = check_complete(el.val1, xCO(xATCO(xANY(), xANY()), xANY()), "eval_list")
 
         if r.want is not None:
             return r.want
@@ -686,7 +733,7 @@ class Operator(Function):
 
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, xATCO(self.resolve_spec(), xANY()))
+        r = check_complete(el.val1, xATCO(self.resolve_spec(), xANY()), self.__class__.__name__)
         if r.want is not None:
             return r.want
         if r.err is not None:
@@ -754,7 +801,7 @@ class op_a(Operator):
     def resolve(self, el):
         # (env app tree...)
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, xCO(xANY(), xCO(xANY(), xATCO(xANY(), xANY()))))
+        r = check_complete(el.val1, xCO(xANY(), xCO(xANY(), xATCO(xANY(), xANY()))), "a")
         if r.want is not None:
             return r.want
         if r.err is not None:
@@ -914,7 +961,7 @@ class op_c(Operator):
 
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, xATCO(xANY(), xATCO(xANY(), xANY())))
+        r = check_complete(el.val1, xATCO(xANY(), xATCO(xANY(), xANY())), "c")
         if r.want is not None:
             return r.want
         if r.err is not None:
@@ -1674,16 +1721,102 @@ class SExpr:
         return s[m.end():], m
 
     @classmethod
-    def demacro(cls, e):
+    def demacro_module(cls, e):
+        symtable = {}
+        l = e.cons_to_pylist()
+        if l is None:
+            return Element.Error(f"argument to module not a list")
+        for e in l:
+            dfn = e.cons_to_pylist()
+            if not dfn or dfn[0].kind != SYMBOL or dfn[0].val1 != "define" or len(dfn) != 3:
+                return Element.Error(f"invalid module entry {e}")
+            name = dfn[1].cons_to_pylist()
+            if not name or name[0].kind != SYMBOL:
+                return Element.Error(f"invalid module entry {e}")
+            if name[0].val1 in symtable:
+                return Element.Error(f"duplicate symbol {name[0]}")
+            if name[0].val1 in SExpr_FUNCS:
+                return Element.Error(f"define {name[0]} duplicates opcode")
+            args = []
+            for a in name[1:]:
+                if a.kind != SYMBOL:
+                    return Element.Error(f"define arg name must be symbol, not {a}")
+                if a.val1 in SExpr_FUNCS:
+                    return Element.Error(f"argument {a} duplicates opcode")
+                args.append(a.val1)
+            symtable[name[0].val1] = (args, dfn[2])
+        names = symtable.keys()
+        if "main" not in names:
+            return Element.Error("no main function in module")
+        defs = list(symtable.keys())
+        envpos = {a: b for a,b in zip(defs, Tree.get_values_pair(len(symtable), 1)[0])}
+        defcons = Element.Atom(0)
+        for d in reversed(defs):
+            argpos = {a: b for a,b in zip(symtable[d][0], Tree.get_values_pair(1, len(symtable[d][0]))[1])}
+            argpos.update(envpos)
+            defcons = Element.Cons(
+                cls.demacro(symtable[d][1], argpos),
+                defcons)
+
+        # (a (a <main>) (b ...) 1)
+        return Element.Cons(Element.Atom(SExpr_FUNCS['a']),
+               Element.Cons(
+                   Element.Cons(Element.Atom(SExpr_FUNCS['q']),
+                   Element.Cons(Element.Atom(SExpr_FUNCS['a']),
+                   Element.Cons(Element.Atom(envpos["main"]),
+                   Element.Atom(0)))),
+               Element.Cons(
+                   Element.Cons(Element.Atom(SExpr_FUNCS['b']),
+                   Element.Cons(
+                      Element.Cons(Element.Atom(SExpr_FUNCS['q']), defcons),
+                   Element.Atom(0))),
+               Element.Cons(Element.Atom(1),
+               Element.Atom(0)))))
+
+    @classmethod
+    def demacro_c_list(cls, e, extrasyms=None):
+        orig = e
+        if e.kind == ATOM: return e
+        # (x y z) -> (c x y z nil)
+        els = []
+        while e.kind == CONS:
+            els.append( cls.demacro(e.val1, extrasyms, midlist=True) )
+            e = e.val2
+        if not e.is_nil():
+            return Element.Error("arg list {orig} not nil terminated")
+        cons = Element.Cons(e, Element.Atom(0))
+        for e in reversed(els):
+            cons = Element.Cons(e, cons)
+        cons = Element.Cons(Element.Atom(SExpr_FUNCS['c']), cons)
+        return cons
+
+    @classmethod
+    def demacro(cls, e, extrasyms=None, midlist=False):
         if e.kind == ATOM: return e
         if e.kind == CONS:
-            l = cls.demacro(e.val1)
-            r = cls.demacro(e.val2)
+            if e.val1.kind == SYMBOL and not midlist:
+                if e.val1.val1 == "module":
+                    return cls.demacro_module(e.val2)
+                if extrasyms and e.val1.val1 in extrasyms:
+                    # (foo bar baz) -> (a ENV 2 (b bar baz))
+                    return Element.Cons(Element.Atom(SExpr_FUNCS['a']),
+                           Element.Cons(Element.Atom(extrasyms[e.val1.val1]),
+                           Element.Cons(Element.Atom(2),
+                           Element.Cons(
+                               Element.Cons(Element.Atom(SExpr_FUNCS['b']),
+                               Element.Cons(
+                                 cls.demacro_c_list(e.val2, extrasyms),
+                               Element.Atom(0))),
+                           Element.Atom(0)))))
+            l = cls.demacro(e.val1, extrasyms, midlist=False)
+            r = cls.demacro(e.val2, extrasyms, midlist=True)
             return Element.Cons(l, r)
         if e.kind == SYMBOL:
             if e.val1 in SExpr_FUNCS:
                 return Element.Atom(SExpr_FUNCS[e.val1])
-            return Element.Error(f"undefined symbol {e}")
+            if extrasyms and e.val1 in extrasyms:
+                return Element.Atom(extrasyms[e.val1])
+            return Element.Error(f"undefined symbol {e.val1} {extrasyms}")
         return Element.error(f"unexpected element {e}")
 
     @classmethod
@@ -1758,7 +1891,6 @@ class SExpr:
             if len(parstack[0]) > 1:
                 raise Exception("multiple unbracketed entries")
             return parstack[0][0]
-
         else:
             return cls.list_to_element(parstack[0])
 
@@ -1907,6 +2039,7 @@ def lazy_eval(env, sexpr, debug):
         if ALLOCATOR.over_limit(): break
         dfs, work = stack.pop()
         if debug: print(f"{len(stack)}/{0+dfs}:{ALLOCATOR.effort}: {work}")
+        if debug: print(f"r: {result}")
         if work.kind == REF:
             if work.val1.kind == REF:
                 work.replace(REF, work.val1.val1.bumpref())
@@ -2237,12 +2370,17 @@ rep = Rep(SExpr.compile(sexpr))
 
 rep("(a 8 '(0xc1 . 0x20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1ac0063036f726401010a746578742f706c61696e00337b2270223a226272632d3230222c226f70223a226d696e74222c227469636b223a22656f7262222c22616d74223a223130227d68) nil '0xe9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1 '0xc142718fddee89867607e1eeb6e1aab685285e5c78c9ffd2f379c68d52bcb0b6 7 5 6 12)")
 
-print(SExpr.parse("(foo bar 33)"))
-print(SExpr.compile("(foo bar 33)"))
+rep("(a 8 '(0xc1 . 0x20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1ac0063036f726401010a746578742f706c61696e00337b2270223a226272632d3230222c226f70223a226d696e74222c227469636b223a22656f7262222c22616d74223a223130227d68) nil '0xe9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1 '0xc142718fddee89867607e1eeb6e1aab685285e5c78c9ffd2f379c68d52bcb0b6 7 5 6 12)")
 
-rep = Rep(SExpr.compile("(1 2 3 4 5 6)"))
-rep("(a '1 '1 '2 '3 '4 '5 '6)")
-rep("(b 1)")
+# same as above, but this time the witness data is in the environment,
+# and the program is passed in
+
+rep = Rep(SExpr.parse("0xc1 0x20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1ac0063036f726401010a746578742f706c61696e00337b2270223a226272632d3230222c226f70223a226d696e74222c227469636b223a22656f7262222c22616d74223a223130227d68 nil 0xe9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1 0xc142718fddee89867607e1eeb6e1aab685285e5c78c9ffd2f379c68d52bcb0b6", many=True))
+rep("(a '(a 16 (c 17 25) 21 29 7 6 28 20 24) (b '(%s %s %s %s %s)) (b 1))" % (taproot, taghash, tapleaf, tapbranch, tappath))
+
+rep = Rep(SExpr.parse("12"))
+rep("(module (define (_x _a _b) (* _a _b)) (define (main _a) (+ (_x _a _a) '1)))")
+#print(exp)
 
 # test: (secp_muladd ,tt (1 ,p) (,x ,spk))
 # tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
