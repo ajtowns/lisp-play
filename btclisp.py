@@ -2382,6 +2382,9 @@ rep = Rep(SExpr.parse("12"))
 rep("(module (define (_x _a _b) (* _a _b)) (define (main _a) (+ (_x _a _a) '1)))")
 #print(exp)
 
+rep = Rep(SExpr.parse("19"))
+rep("(module (define (factorial _n accum) (i _n (factorial (- _n '1) (* _n accum)) accum)) (define (main _x) (factorial _x '1)))")
+
 # test: (secp_muladd ,tt (1 ,p) (,x ,spk))
 # tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
 # tl: (a '(sha256 1 1 ,v (strlen ,scr) ,scr) (sha256 '"TapLeaf"))
