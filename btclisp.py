@@ -364,15 +364,94 @@ class SerDeser:
 
     assert QUICK_OPEN_OFFSET + MAX_QUICK_LIST + 1 == SLOW_LIST, f"{QUICK_OPEN_OFFSET} + {MAX_QUICK_LIST} + 1 != {SLOW_LIST}"
 
-    def __init__(self, b=None):
-        if b:
-            self.b = bytes(b)
+    def __init__(self):
+        self.b = None
+        self.i = None
+
+    def _read(self, n):
+        assert self.i + n <= len(self.b), f"{self.i} + {n} > {len(self.b)}"
+        x = self.b[self.i:self.i+n]
+        self.i += n
+        return x
+
+    def Deserialize(self, b):
+        self.b, self.i = b, 0
+        el = self._Deserialize()
+        if self.i != len(self.b):
+            raise Exception(f"incomplete deserialization {self.i} != {len(self.b)}")
+        self.b = self.i = None
+        return el
+
+    def _Deserialize(self):
+        code = self._read(1)[0]
+        if code & 0x80:
+            quoted = True
+            code &= 0x7F
         else:
-            self.b = b''
+            quoted = False
+        if code == 0:
+            el = Element.Atom(0)
+        elif code <= self.MAX_QUICK_ONEBYTE:
+            el = Element.Atom(code)
+        elif code == self.QUICK_LEFTOVER:
+            code2 = self._read(1)[0]
+            if code2 == 0 or code2 > self.MAX_QUICK_ONEBYTE:
+                el = Element.Atom(code2, 1)
+            else:
+                s = code2 + self.MAX_QUICK_MULTIBYTE
+                el = Element.Atom(self._read(s))
+        elif code < self.SLOW_MULTIBYTE:
+            s = code - self.QUICK_MULTIBYTE_OFFSET
+            el = Element.Atom(self._read(s))
+        elif code == self.SLOW_MULTIBYTE:
+            s = 0
+            while (x := self._read(1)[0]) == 255:
+                s += x
+            s += x
+            el = Element.Atom(self._read(s))
+        else:
+            # cons!
+            if code <= self.QUICK_OPEN_OFFSET:
+                s = code - self.QUICK_CLOSED_OFFSET
+                closed = True
+            elif code < self.SLOW_LIST:
+                s = code - self.QUICK_OPEN_OFFSET
+                closed = False
+            else:
+                code2 = self._read(1)[0]
+                closed = (code2 & 0x80) == 0
+                code2 = code2 & 0x7F
+                s = self.MAX_QUICK_LIST + 1
+                if code2 < 0x7F:
+                    s += code2
+                else:
+                    s += 0x7F
+                    while (x := self._read(1)[0]) == 255:
+                        s += x
+                    s += x
+            ls = []
+            for _ in range(s):
+                e = self._Deserialize()
+                ls.append(e)
+            # naughty if not quoted and ls[0]=nil
+
+            if closed:
+                el = Element.Atom(0)
+            else:
+                el = self._Deserialize()
+                # naughty if el=nil
+            for e in reversed(ls):
+                el = Element.Cons(e, el)
+        if quoted:
+            el = Element.Cons(Element.Atom(0), el)
+        return el
 
     def Serialize(self, el):
+        self.b = b''
         self._Serialize(el)
-        return self.b
+        r = self.b
+        self.b = None
+        return r
 
     def _Serialize(self, el):
         while el.kind == REF: el = el.val1
@@ -431,14 +510,14 @@ class SerDeser:
                 offset = self.QUICK_CLOSED_OFFSET if closed else self.QUICK_OPEN_OFFSET
                 self.b += bytes([v|(offset+size)])
             else:
-                closed_tag = 0x00 if closed else 0x40
                 self.b += bytes([v|self.SLOW_LIST])
                 size -= self.MAX_QUICK_LIST + 1
-                if size < 63:
+                closed_tag = 0x00 if closed else 0x80
+                if size < 127:
                     self.b += bytes([closed_tag|size])
                 else:
                     self.b += bytes([closed_tag|63])
-                    size -= 63
+                    size -= 127
                     while size >= 255:
                         self.b += bytes([255])
                         size -= 255
@@ -2205,12 +2284,20 @@ class Rep:
         self.env = env
         self.debug = debug
         self.lazy = lazy
+        eser = SerDeser().Serialize(self.env)
+        edeser = SerDeser().Deserialize(eser)
+        print(f"ENVSER: {eser.hex()}")
+        assert str(edeser) == str(self.env)
 
     def __call__(self, program, debug=None):
         if debug is None: debug = self.debug
         if debug: print("PROGRAM: %s" % (program,))
         p = SExpr.compile(program)
-        print("PROGHEX: %s" % (SerDeser().Serialize(p).hex()))
+        pser = SerDeser().Serialize(p)
+        pdeser = SerDeser().Deserialize(pser)
+        print("PROGHEX: %s" % (pser.hex()))
+        print("DESER: %s" % (pdeser))
+        assert str(pdeser) == str(p)
         ALLOCATOR.max = 0
         ALLOCATOR.reset_work()
         init_x = ALLOCATOR.x
