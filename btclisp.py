@@ -342,6 +342,124 @@ class Element:
         else:
             return "FN(%s,%s)" % (self.val2.__class__.__name__, str(self.val1))
 
+class SerDeser:
+    MAX_QUICK_ONEBYTE = 51
+    MAX_QUICK_MULTIBYTE = 64
+    MAX_QUICK_LIST = 5
+
+    # nil = 0
+    # quick onebyte = 1..max_quick_onebyte
+    # leftovers = max_quick_onebyte+1
+    # quick multibyte = max_quick_onebyte+2..max_quick_onebyte+max_quick_multibyte
+    # slow multibyte = max_quick_onebyte+max_quickmultibyte+1
+    # quick closed list = mqob+mqmb+1..mqob+mqmb+mql
+    # quick open list = mqob+mqmb+mql+1..mqob+mqmb+2*mql
+
+    QUICK_LEFTOVER = MAX_QUICK_ONEBYTE+1
+    QUICK_MULTIBYTE_OFFSET = MAX_QUICK_ONEBYTE
+    SLOW_MULTIBYTE = MAX_QUICK_ONEBYTE + MAX_QUICK_MULTIBYTE + 1
+    QUICK_CLOSED_OFFSET = SLOW_MULTIBYTE
+    QUICK_OPEN_OFFSET = QUICK_CLOSED_OFFSET + MAX_QUICK_LIST
+    SLOW_LIST = 127
+
+    assert QUICK_OPEN_OFFSET + MAX_QUICK_LIST + 1 == SLOW_LIST, f"{QUICK_OPEN_OFFSET} + {MAX_QUICK_LIST} + 1 != {SLOW_LIST}"
+
+    def __init__(self, b=None):
+        if b:
+            self.b = bytes(b)
+        else:
+            self.b = b''
+
+    def Serialize(self, el):
+        self._Serialize(el)
+        return self.b
+
+    def _Serialize(self, el):
+        while el.kind == REF: el = el.val1
+
+        if el.kind == CONS and el.val1.is_nil():
+            v = 0x80
+            el = el.val2
+        else:
+            v = 0
+
+        if el.kind == ATOM:
+            k = el.atom_as_bytes()
+            assert len(k) == el.val2
+            if el.is_nil():
+                self.b += bytes([v|0x00])
+                return
+            elif el.val2 == 1:
+                if 1 <= k[0] <= self.MAX_QUICK_ONEBYTE:
+                    self.b += bytes([v|k[0]])
+                else:
+                    self.b += bytes([v|(self.QUICK_LEFTOVER), k[0]])
+                return
+            elif el.val2 >= 2 and el.val2 <= self.MAX_QUICK_MULTIBYTE:
+                self.b += bytes([v|(self.QUICK_MULTIBYTE_OFFSET+el.val2)])
+                self.b += k
+                return
+            elif el.val2 <= self.MAX_QUICK_MULTIBYTE + self.MAX_QUICK_ONEBYTE:
+                assert el.val2 > self.MAX_QUICK_MULTIBYTE
+                self.b += bytes([v|(self.QUICK_LEFTOVER), el.val2 - self.MAX_QUICK_MULTIBYTE])
+                self.b += k
+                return
+            else:
+                l = el.val2 - self.MAX_QUICK_MULTIBYTE - 1
+                assert l >= 0
+                self.b += bytes([v|(self.SLOW_MULTIBYTE)])
+                while l >= 255:
+                    self.b += b'\ff'
+                    l -= 255
+                b.append(bytes([l]))
+                self.b += bytes(b)
+                self.b += k
+                return
+        elif el.kind == CONS:
+            size = 1
+            fin = el
+            while True:
+                while fin.kind == REF:
+                    fin = fin.val2
+                if fin.val2.kind == ATOM: break
+                if fin.val2.kind != CONS:
+                    raise Exception("not serializable")
+                size += 1
+                fin = fin.val2
+            closed = fin.val2.is_nil()
+            if size <= self.MAX_QUICK_LIST:
+                offset = self.QUICK_CLOSED_OFFSET if closed else self.QUICK_OPEN_OFFSET
+                self.b += bytes([v|(offset+size)])
+            else:
+                closed_tag = 0x00 if closed else 0x40
+                self.b += bytes([v|self.SLOW_LIST])
+                size -= self.MAX_QUICK_LIST + 1
+                if size < 63:
+                    self.b += bytes([closed_tag|size])
+                else:
+                    self.b += bytes([closed_tag|63])
+                    size -= 63
+                    while size >= 255:
+                        self.b += bytes([255])
+                        size -= 255
+                    self.b += bytes([size])
+            chk = el
+            while True:
+                while chk.kind == REF:
+                    chk = chk.val2
+                if chk.kind == CONS:
+                    self._Serialize(chk.val1)
+                    chk = chk.val2
+                else:
+                    assert chk.kind == ATOM
+                    if not closed:
+                        self._Serialize(chk)
+                    break
+            return
+        else:
+            raise Exception("not serializable")
+        assert False, "this line should be unreachable"
+
 class Tree:
     def __init__(self):
         self.tree = []
@@ -2092,6 +2210,7 @@ class Rep:
         if debug is None: debug = self.debug
         if debug: print("PROGRAM: %s" % (program,))
         p = SExpr.compile(program)
+        print("PROGHEX: %s" % (SerDeser().Serialize(p).hex()))
         ALLOCATOR.max = 0
         ALLOCATOR.reset_work()
         init_x = ALLOCATOR.x
