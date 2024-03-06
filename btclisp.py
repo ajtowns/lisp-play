@@ -2589,6 +2589,13 @@ rep("(module (define (_x _a _b) (* _a _b)) (define (main _a) (+ (_x _a _a) '1)))
 rep = Rep(SExpr.parse("19"))
 rep("(module (define (factorial _n accum) (i _n (factorial (- _n '1) (* _n accum)) accum)) (define (main _x) (factorial _x '1)))")
 
+
+rep = Rep(SExpr.parse("(0x256c556c3663e1cfe2412e879bc1ace16785aa79c0ae1840e831e837ab9d963f . 0x2c797661dfac511e35f42601edd355e9cffb6ce47beddd9a9bf0914992c002af34c67933f89da981149f6044448f14ec7931f3641da82fac3aa9512d052e3b71)"))
+
+rep("(a '(secp256k1_muladd (c '1 4) (c (sha256 5 4 7 (bip342_txmsg)) 7) (c 6 nil)) (substr 3 0 '32) (substr 3 '32 '64) (a '(cat 1 1) (sha256 '\"BIP0340/challenge\")) 2)")
+
+rep("(bip340_verify '0x256c556c3663e1cfe2412e879bc1ace16785aa79c0ae1840e831e837ab9d963f (bip342_txmsg) '0x2c797661dfac511e35f42601edd355e9cffb6ce47beddd9a9bf0914992c002af34c67933f89da981149f6044448f14ec7931f3641da82fac3aa9512d052e3b71)")
+
 # test: (secp_muladd ,tt (1 ,p) (,x ,spk))
 # tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
 # tl: (a '(sha256 1 1 ,v (strlen ,scr) ,scr) (sha256 '"TapLeaf"))
