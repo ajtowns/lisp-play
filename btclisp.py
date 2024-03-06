@@ -1859,10 +1859,8 @@ FUNCS = [
       ## allow this to apply to arbitrary atoms?
       ## (log of a 500kB atoms will fit into a u64)
 
-#  (0x20, "rd_csn", op_csn_read),  # convert CScriptNum to u64?
-#  (0x21, "wr_csn", op_csn_write), # convert u64 to CScriptNum?
-#  (0x22, "rd_list", op_list_read), # read bytes to Element
-#  (0x23, "wr_list", op_list_write), # write Element as bytes
+#  (0x22, "rd", op_list_read), # read bytes to Element
+#  (0x23, "wr", op_list_write), # write Element as bytes
 
   (0x24, "sha256", op_sha256),
  # (0x25, "ripemd160", op_ripemd160),
@@ -1895,7 +1893,7 @@ class SExpr:
     re_int = re.compile("^-?\d+$")
     re_hex = re.compile("^0x[0-9a-fA-F]+$")
     re_quote = re.compile('^"[^"]*"$')
-    re_sym = re.compile('^[a-z0-9_<>=~&|^+*/%-]+$')
+    re_sym = re.compile('^[a-zA-Z0-9_<>=~&|^+*/%-]+$')
     # re_sym doesn't match (< 1 2) and other mathsy ops
 
     @staticmethod
