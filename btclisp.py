@@ -1516,6 +1516,48 @@ class op_lt_lendian(op_lt_str):
             if ca > cb: return False
         return False
 
+class op_list_read(Operator):
+    def __init__(self):
+        self.el = None
+
+    def argument(self, el):
+        if self.el is not None:
+            raise Exception("rd: too many arguments")
+        if not el.is_atom():
+            raise Exception("rd: argument must be atom")
+        self.el = el
+
+    def abandon(self):
+        return [self.el] if self.el is not None else []
+
+    def finish(self):
+        if self.el is None:
+            return Element.Error(f"rd: argument required")
+        edeser = SerDeser().Deserialize(self.el.atom_as_bytes())
+        self.el.deref()
+        self.el = None
+        return edeser
+
+class op_list_write(Operator):
+    def __init__(self):
+        self.el = None
+
+    def argument(self, el):
+        if self.el is not None:
+            raise Exception("rd: too many arguments")
+        self.el = el
+
+    def abandon(self):
+        return [self.el] if self.el is not None else []
+
+    def finish(self):
+        if self.el is None:
+            return Element.Error(f"rd: argument required")
+        eser = SerDeser().Serialize(self.el)
+        self.el.deref()
+        self.el = None
+        return Element.Atom(eser)
+
 class op_sha256(Operator):
     def __init__(self):
         self.st = hashlib.sha256()
@@ -1859,8 +1901,8 @@ FUNCS = [
       ## allow this to apply to arbitrary atoms?
       ## (log of a 500kB atoms will fit into a u64)
 
-#  (0x22, "rd", op_list_read), # read bytes to Element
-#  (0x23, "wr", op_list_write), # write Element as bytes
+  (0x22, "rd", op_list_read), # read bytes to Element
+  (0x23, "wr", op_list_write), # write Element as bytes
 
   (0x24, "sha256", op_sha256),
  # (0x25, "ripemd160", op_ripemd160),
@@ -2595,6 +2637,11 @@ rep = Rep(SExpr.parse("(0x256c556c3663e1cfe2412e879bc1ace16785aa79c0ae1840e831e8
 rep("(a '(secp256k1_muladd (c '1 4) (c (sha256 5 4 7 (bip342_txmsg)) 7) (c 6 nil)) (substr 3 0 '32) (substr 3 '32 '64) (a '(cat 1 1) (sha256 '\"BIP0340/challenge\")) 2)")
 
 rep("(bip340_verify '0x256c556c3663e1cfe2412e879bc1ace16785aa79c0ae1840e831e837ab9d963f (bip342_txmsg) '0x2c797661dfac511e35f42601edd355e9cffb6ce47beddd9a9bf0914992c002af34c67933f89da981149f6044448f14ec7931f3641da82fac3aa9512d052e3b71)")
+
+rep("(rd '0xa0)")
+rep("(wr '(1 2 3 (4 5 6 (7 8 9))))")
+rep("(rd '0x780102037804050677070809)")
+rep("(rd (wr '(1 2 3 (4 5 6 (7 8 9)))))")
 
 # test: (secp_muladd ,tt (1 ,p) (,x ,spk))
 # tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
