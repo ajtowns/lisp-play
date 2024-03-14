@@ -352,17 +352,17 @@ class SerDeser:
     # leftovers = max_quick_onebyte+1
     # quick multibyte = max_quick_onebyte+2..max_quick_onebyte+max_quick_multibyte
     # slow multibyte = max_quick_onebyte+max_quickmultibyte+1
-    # quick closed list = mqob+mqmb+1..mqob+mqmb+mql
-    # quick open list = mqob+mqmb+mql+1..mqob+mqmb+2*mql
+    # quick proper list = mqob+mqmb+1..mqob+mqmb+mql
+    # quick improper list = mqob+mqmb+mql+1..mqob+mqmb+2*mql
 
     QUICK_LEFTOVER = MAX_QUICK_ONEBYTE+1
     QUICK_MULTIBYTE_OFFSET = MAX_QUICK_ONEBYTE
     SLOW_MULTIBYTE = MAX_QUICK_ONEBYTE + MAX_QUICK_MULTIBYTE + 1
-    QUICK_CLOSED_OFFSET = SLOW_MULTIBYTE
-    QUICK_OPEN_OFFSET = QUICK_CLOSED_OFFSET + MAX_QUICK_LIST
+    QUICK_PROPER_OFFSET = SLOW_MULTIBYTE
+    QUICK_IMPROPER_OFFSET = QUICK_PROPER_OFFSET + MAX_QUICK_LIST
     SLOW_LIST = 127
 
-    assert QUICK_OPEN_OFFSET + MAX_QUICK_LIST + 1 == SLOW_LIST, f"{QUICK_OPEN_OFFSET} + {MAX_QUICK_LIST} + 1 != {SLOW_LIST}"
+    assert QUICK_IMPROPER_OFFSET + MAX_QUICK_LIST + 1 == SLOW_LIST, f"{QUICK_IMPROPER_OFFSET} + {MAX_QUICK_LIST} + 1 != {SLOW_LIST}"
 
     def __init__(self):
         self.b = None
@@ -411,11 +411,11 @@ class SerDeser:
             el = Element.Atom(self._read(s))
         else:
             # cons!
-            if code <= self.QUICK_OPEN_OFFSET:
-                s = code - self.QUICK_CLOSED_OFFSET
+            if code <= self.QUICK_IMPROPER_OFFSET:
+                s = code - self.QUICK_PROPER_OFFSET
                 closed = True
             elif code < self.SLOW_LIST:
-                s = code - self.QUICK_OPEN_OFFSET
+                s = code - self.QUICK_IMPROPER_OFFSET
                 closed = False
             else:
                 code2 = self._read(1)[0]
@@ -507,7 +507,7 @@ class SerDeser:
                 fin = fin.val2
             closed = fin.val2.is_nil()
             if size <= self.MAX_QUICK_LIST:
-                offset = self.QUICK_CLOSED_OFFSET if closed else self.QUICK_OPEN_OFFSET
+                offset = self.QUICK_PROPER_OFFSET if closed else self.QUICK_IMPROPER_OFFSET
                 self.b += bytes([v|(offset+size)])
             else:
                 self.b += bytes([v|self.SLOW_LIST])
@@ -620,8 +620,8 @@ class Function:
         el.set_error("resolve unimplemented")
         return None
 
-    def set_error_open_list(self, el, what="program"):
-        el.set_error(f"{what} specified as open list (non-nil terminator)")
+    def set_error_improper_list(self, el, what="program"):
+        el.set_error(f"{what} specified as improper list (non-nil terminator)")
 
 class fn_tree(Function):
     """for lazily constructing a minimal binary tree from elements in
@@ -687,7 +687,7 @@ class fn_tree(Function):
             if r.right.el.is_nil():
                 self.collapse(el)
             else:
-                self.set_error_open_list(el, "tree")
+                self.set_error_improper_list(el, "tree")
             return None
         else:
             sofar = r.left.el.bumpref()
@@ -941,7 +941,7 @@ class Operator(Function):
             if r.el.is_nil():
                 self.finalize(el)
             else:
-                self.set_error_open_list(el)
+                self.set_error_improper_list(el)
             ALLOCATOR.record_work(30)
             return None
         else:
@@ -1010,7 +1010,7 @@ class op_a(Operator):
             if r.right.right.el.is_nil():
                 el.replace(FUNC, Element.Cons(program.bumpref(), env.bumpref()), fn_eval())
             else:
-                self.set_error_open_list(el)
+                self.set_error_improper_list(el)
             return None
 
         tree_args = Element.Cons(Element.Atom(0), r.right.right.el.bumpref())
@@ -1165,14 +1165,14 @@ class op_c(Operator):
             el.replace(REF, r.err)
             return None
 
-        open_list = False
+        improper_list = False
         if r.el.is_atom():
-            open_list = not r.el.is_nil()
+            improper_list = not r.el.is_nil()
         elif r.right.el.is_atom():
-            open_list = not r.right.el.is_nil()
+            improper_list = not r.right.el.is_nil()
 
-        if open_list:
-            self.set_error_open_list(el)
+        if improper_list:
+            self.set_error_improper_list(el)
         elif r.el.is_atom():
             el.replace(REF, Element.Atom(0))
         elif r.right.el.is_atom():
@@ -2642,6 +2642,11 @@ rep("(rd '0xa0)")
 rep("(wr '(1 2 3 (4 5 6 (7 8 9))))")
 rep("(rd '0x780102037804050677070809)")
 rep("(rd (wr '(1 2 3 (4 5 6 (7 8 9)))))")
+
+print("first: bip340")
+rep("(wr '(a '(secp256k1_muladd (c '1 4) (c (sha256 5 4 7 (bip342_txmsg)) 7) (c 6 nil)) (substr 3 0 '32) (substr 3 '32 '64) (a '(cat 1 1) (sha256 '\"BIP0340/challenge\")) 2))")
+print("second: sighash_all")
+rep("(wr '(a '(a '(sha256 4 4 '0x00 6 3) (sha256 '\"TapSighash\") (cat '0x00 (tx '0) (tx '1) (sha256 (a 1 1 '(cat (tx (c '11 1)) (tx (c '12 1))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '15 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(a '(cat (strlen 1) 1) (tx '(16 . 0))) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(tx (c '10 1)) '0 (tx '2) 'nil)) (sha256 (a 1 1 '(cat (tx (c '20 1)) (a '(cat (strlen 1) 1) (tx (c '21 1)))) '0 (tx '3) 'nil)) (i (tx '14) '0x03 '0x01) (substr (cat (tx '4) '0x00000000) 'nil '4) (i (tx '14) (sha256 (a '(cat (strlen 1) 1) (tx '14))) 'nil)) (cat (tx '6) '0x00 '0xffffffff)) '(a (i 14 '(a 8 8 12 (+ 10 '1) (- 14 '1) (cat 3 (a 12 10))) '3))))")
 
 # test: (secp_muladd ,tt (1 ,p) (,x ,spk))
 # tt: (a '(sha256 1 1 ,p ,root) (sha256 '"TapTweak"))
