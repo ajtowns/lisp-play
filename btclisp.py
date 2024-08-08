@@ -1151,10 +1151,6 @@ class op_c(Operator):
     # (c head tail), (c h1 h2 h3 tail)
     # this may mean you often want to have "nil" as the last arg,
     # if you're constructing a list from scratch
-    # ... really this should be (c head . tail) or (c h1 h2 h3 . tail)
-    # ... because (a) you skip specifying nil, (b) adding a dot is nbd,
-    # ... (c) it's more aligned with (q), (d) it's easier to code, (e)
-    # ... it's slightly more efficient
 
     def resolve(self, el):
         assert el.kind == FUNC and el.val2 is self
