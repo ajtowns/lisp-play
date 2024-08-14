@@ -531,5 +531,101 @@ class SerDeser:
             raise Exception("not serializable")
         assert False, "this line should be unreachable"
 
+class SExpr:
+    re_parse = re.compile("(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<tick>['])|(?P<atom>[^'()\s.]+)")
+    re_int = re.compile("^-?\d+$")
+    re_hex = re.compile("^0x[0-9a-fA-F]+$")
+    re_quote = re.compile('^"[^"]*"$')
+    re_sym = re.compile('^[a-zA-Z0-9_<>=~&|^+*/%-]+$')
+
+    @staticmethod
+    def list_to_element(l):
+        if len(l) >= 3 and l[-2] is None:
+            t = l[-1]
+            l = l[:-2]
+        else:
+            t = Element.Atom(0)
+        assert None not in l
+        for h in reversed(l):
+            t = Element.Cons(h, t)
+        return t
+
+    @classmethod
+    def get_token(cls, s):
+        m = cls.re_parse.match(s)
+        if m is None:
+            raise Exception("failed to parse at \"%s\"" % (s,))
+        return s[m.end():], m
+
+    @classmethod
+    def parse(cls, s, many=False):
+        where = 0
+        end = len(s)
+        parstack = [[]]
+
+        while s != "":
+            s, m = cls.get_token(s)
+
+            g = m.groupdict()
+            if g["ws"]:
+                pass
+            elif g["open"]:
+                parstack.append([])
+            elif g["close"]:
+                if len(parstack) <= 1 or (parstack[-1] and parstack[-1][-1] is None) or (parstack[-1] and parstack[-1][0] == "tick"):
+                    raise Exception("unexpected )")
+                q = parstack.pop()
+                parstack[-1].append(cls.list_to_element(q))
+            elif g["dot"]:
+                if len(parstack[-1]) == 0:
+                    raise Exception("must have one or more elements before . in list")
+                parstack[-1].append(None)
+            elif g["tick"]:
+                parstack.append(["tick"])
+            elif g["atom"]:
+                a = g["atom"]
+                is_sym = False
+                if a == "nil":
+                    a = 0
+                elif cls.re_hex.match(a):
+                    a = bytes.fromhex(a[2:])
+                elif cls.re_int.match(a):
+                    a = int(a, 10)
+                elif cls.re_quote.match(a):
+                    a = a[1:-1]
+                elif cls.re_sym.match(a):
+                    is_sym = True
+                else:
+                    raise Exception("unparsable/unknown atom %r" % (a,))
+                if is_sym:
+                    parstack[-1].append(Element.Symbol(a))
+                elif a == b'' or a == 0:
+                    parstack[-1].append(Element.Atom(0))
+                else:
+                    parstack[-1].append(Element.Atom(a))
+            else:
+                raise Exception("BUG: unhandled match")
+
+            while len(parstack[-1]) > 1 and parstack[-1][0] == "tick":
+                assert len(parstack[-1]) == 2
+                q = parstack.pop()
+                parstack[-1].append(Element.Cons(Element.Atom(0), q[1]))
+
+            if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
+                raise Exception("cannot have multiple elements after . in list")
+
+        if parstack and parstack[-1] and parstack[-1][0] == "tick":
+            raise Exception("tick without following element")
+
+        if len(parstack) > 1:
+            raise Exception("missing )")
+
+        if not many:
+            if len(parstack[0]) > 1:
+                raise Exception("multiple unbracketed entries")
+            return parstack[0][0]
+        else:
+            return cls.list_to_element(parstack[0])
+
 nil = Element.Atom(0)
 one = Element.Atom(1)

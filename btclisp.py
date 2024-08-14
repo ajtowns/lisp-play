@@ -10,7 +10,7 @@ import verystable.core.messages
 import verystable.core.script
 import verystable.core.secp256k1
 
-from element import Element, ALLOCATOR, ATOM, CONS, ERROR, FUNC, REF, SYMBOL, SerDeser, nil, one
+from element import Element, SExpr, ALLOCATOR, ATOM, CONS, ERROR, FUNC, REF, SYMBOL, SerDeser, nil, one
 
 class Tree:
     def __init__(self):
@@ -1399,33 +1399,7 @@ def _Do_FUNCS():
     return se, op
 SExpr_FUNCS, Op_FUNCS = _Do_FUNCS()
 
-class SExpr:
-    re_parse = re.compile("(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<tick>['])|(?P<atom>[^'()\s.]+)")
-    re_int = re.compile("^-?\d+$")
-    re_hex = re.compile("^0x[0-9a-fA-F]+$")
-    re_quote = re.compile('^"[^"]*"$')
-    re_sym = re.compile('^[a-zA-Z0-9_<>=~&|^+*/%-]+$')
-    # re_sym doesn't match (< 1 2) and other mathsy ops
-
-    @staticmethod
-    def list_to_element(l):
-        if len(l) >= 3 and l[-2] is None:
-            t = l[-1]
-            l = l[:-2]
-        else:
-            t = Element.Atom(0)
-        assert None not in l
-        for h in reversed(l):
-            t = Element.Cons(h, t)
-        return t
-
-    @classmethod
-    def get_token(cls, s):
-        m = cls.re_parse.match(s)
-        if m is None:
-            raise Exception("failed to parse at \"%s\"" % (s,))
-        return s[m.end():], m
-
+class Compiler:
     @classmethod
     def demacro_module(cls, e):
         symtable = {}
@@ -1526,79 +1500,9 @@ class SExpr:
         return Element.error(f"unexpected element {e}")
 
     @classmethod
-    def compile(cls, s):
-        e = cls.parse(s, many=False)
+    def compile(cls, sexpr):
+        e = SExpr.parse(sexpr, many=False)
         return cls.demacro(e)
-
-    @classmethod
-    def parse(cls, s, many=False):
-        where = 0
-        end = len(s)
-        parstack = [[]]
-
-        while s != "":
-            s, m = cls.get_token(s)
-
-            g = m.groupdict()
-            if g["ws"]:
-                pass
-            elif g["open"]:
-                parstack.append([])
-            elif g["close"]:
-                if len(parstack) <= 1 or (parstack[-1] and parstack[-1][-1] is None) or (parstack[-1] and parstack[-1][0] == "tick"):
-                    raise Exception("unexpected )")
-                q = parstack.pop()
-                parstack[-1].append(cls.list_to_element(q))
-            elif g["dot"]:
-                if len(parstack[-1]) == 0:
-                    raise Exception("must have one or more elements before . in list")
-                parstack[-1].append(None)
-            elif g["tick"]:
-                parstack.append(["tick"])
-            elif g["atom"]:
-                a = g["atom"]
-                is_sym = False
-                if a == "nil":
-                    a = 0
-                elif cls.re_hex.match(a):
-                    a = bytes.fromhex(a[2:])
-                elif cls.re_int.match(a):
-                    a = int(a, 10)
-                elif cls.re_quote.match(a):
-                    a = a[1:-1]
-                elif cls.re_sym.match(a):
-                    is_sym = True
-                else:
-                    raise Exception("unparsable/unknown atom %r" % (a,))
-                if is_sym:
-                    parstack[-1].append(Element.Symbol(a))
-                elif a == b'' or a == 0:
-                    parstack[-1].append(Element.Atom(0))
-                else:
-                    parstack[-1].append(Element.Atom(a))
-            else:
-                raise Exception("BUG: unhandled match")
-
-            while len(parstack[-1]) > 1 and parstack[-1][0] == "tick":
-                assert len(parstack[-1]) == 2
-                q = parstack.pop()
-                parstack[-1].append(Element.Cons(Element.Atom(0), q[1]))
-
-            if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
-                raise Exception("cannot have multiple elements after . in list")
-
-        if parstack and parstack[-1] and parstack[-1][0] == "tick":
-            raise Exception("tick without following element")
-
-        if len(parstack) > 1:
-            raise Exception("missing )")
-
-        if not many:
-            if len(parstack[0]) > 1:
-                raise Exception("multiple unbracketed entries")
-            return parstack[0][0]
-        else:
-            return cls.list_to_element(parstack[0])
 
 def steal_list(l):
     assert isinstance(l, Element) and l.is_cons()
@@ -1801,7 +1705,7 @@ class Rep:
     def __call__(self, program, debug=None):
         if debug is None: debug = self.debug
         if debug: print("PROGRAM: %s" % (program,))
-        p = SExpr.compile(program)
+        p = Compiler.compile(program)
         pser = SerDeser().Serialize(p)
         pdeser = SerDeser().Deserialize(pser)
         print("PROGHEX: %s" % (pser.hex()))
@@ -1852,7 +1756,7 @@ class Rep:
         assert ALLOCATOR.x == init_x, "memory leak: %d -> %d (%d)" % (init_x, ALLOCATOR.x, ALLOCATOR.x - init_x)
         p.deref()
 
-rep = Rep(SExpr.compile("((55 . 33) . (22 . 8))"))
+rep = Rep(Compiler.compile("((55 . 33) . (22 . 8))"))
 print("\nBasic syntax -- Env: %s" % (rep.env))
 
 
@@ -1920,7 +1824,7 @@ rep("(~ '1 '3 '5)")
 # factorial
 # n=2, fn=3
 # `if 2 (a 3 (- 2 '1) 3)
-rep = Rep(SExpr.compile("(a (i 2 '(* 2 (a 3 (- 2 '1) 3)) ''1))"))
+rep = Rep(Compiler.compile("(a (i 2 '(* 2 (a 3 (- 2 '1) 3)) ''1))"))
 print("\nInefficient factorial -- Env: %s" % (rep.env))
 rep("(a 1 '3 1)")
 rep("(a 1 '10 1)")
@@ -1929,7 +1833,7 @@ rep("(a 1 '40 1)")
 #rep("(a 1 (c '15000 1))")
 
 # factorial but efficient
-rep = Rep(SExpr.compile("(a (i 2 '(a 7 (c (- 2 '1) (* 5 2) 7)) '(c 5)))"))
+rep = Rep(Compiler.compile("(a (i 2 '(a 7 (c (- 2 '1) (* 5 2) 7)) '(c 5)))"))
 print("\nEfficient (?) factorial -- Env: %s" % (rep.env))
 rep("(a 1 (c '3 '1 1))")
 rep("(a 1 (c '10 '1 1))")
@@ -1943,7 +1847,7 @@ rep("(a 1 (c '15000 '1 1))")
 # f a! a b =
 # 4=fn 6=(a-1)! 5=a 7=left!
 
-rep = Rep(SExpr.compile("(a (i 7 '(c (c nil 6) (a 4 4 (* 6 5) (+ 5 '1) (- 7 '1))) '(c nil)))"))
+rep = Rep(Compiler.compile("(a (i 7 '(c (c nil 6) (a 4 4 (* 6 5) (+ 5 '1) (- 7 '1))) '(c nil)))"))
 print("\nSum factorial (1! + 2! + .. + n!) -- Env: %s" % (rep.env))
 #rep("(a 1 1 '1 '1 '10)")
 rep("(c '+ (a 1 1 '1 '1 '10))")
@@ -1959,17 +1863,17 @@ rep("(a (c '+ (a 1 1 '1 '1 '10)))")
 # fib 0 a b = a; fib n a b = fib (n-1) b (a+b)
 # env = (n a b FIB) ; n=2, a=5, b=11, FIB=15
 
-rep = Rep(SExpr.compile("(a (i 2 '(a 15 (c (- 2 '1) 11 (+ 5 11) 15)) '(c 5)))"))
+rep = Rep(Compiler.compile("(a (i 2 '(a 15 (c (- 2 '1) 11 (+ 5 11) 15)) '(c 5)))"))
 print("\nFibonacci 1 -- Env: %s" % (rep.env))
 rep("(a 1 (c '300 '0 '1 1))")
 rep("(a 1 (c '500 '0 '1 1))")
 
-rep = Rep(SExpr.compile("(a (i 4 '(a 7 (- 4 '1) 5 (+ 6 5) 7) '(c 6)))"))
+rep = Rep(Compiler.compile("(a (i 4 '(a 7 (- 4 '1) 5 (+ 6 5) 7) '(c 6)))"))
 print("\nFibonacci 2 -- Env: %s" % (rep.env))
 rep("(a 1 '300 '0 '1 1)")
 rep("(a 1 '500 '0 '1 1)")
 
-rep = Rep(SExpr.compile("0x0200000015a20d97f5a65e130e08f2b254f97f65b96173a7057aef0da203000000000000887e309c02ebdddbd0f3faff78f868d61b1c4cff2a25e5b3c9d90ff501818fa0e7965d508bdb051a40d8d8f7"))
+rep = Rep(Compiler.compile("0x0200000015a20d97f5a65e130e08f2b254f97f65b96173a7057aef0da203000000000000887e309c02ebdddbd0f3faff78f868d61b1c4cff2a25e5b3c9d90ff501818fa0e7965d508bdb051a40d8d8f7"))
 print("\nHash a transaction -- Env: %s" % (rep.env))
 rep("(sha256 (sha256 1))")
 rep("(hash256 1)")
@@ -2015,7 +1919,7 @@ for a in [0,1,2,3,4,5,6,7,10,11,12,13,14,15,16,20,21]:
 
 # acc fn 0 n nil -> acc fn 1 (- n 1) (cat nil (fn 0))
 #  8  12 10 14 3
-rep = Rep(SExpr.compile("nil"))
+rep = Rep(Compiler.compile("nil"))
 print("\nBIP342 calculated manually -- Env: %s" % (rep.env))
 rep("(bip342_txmsg)")
 
@@ -2049,7 +1953,7 @@ mybip340 = "(a 7 (substr 8 0 '32) (substr 8 '32 '64) 12 10 14 5)"
   # expects sig P m bip340check mkE mybip340x
 sexpr = "((%s . %s) . (%s . %s))" % (bip340check, mkE, mybip340x, mybip340)
 print(f"env={sexpr}")
-rep = Rep(SExpr.compile(sexpr))
+rep = Rep(Compiler.compile(sexpr))
   # usage: (a 7 SIG P M 4 6 5)
 
 # P = F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9
@@ -2077,7 +1981,7 @@ taproot = "(secp256k1_muladd (a 9 (a 11 (& 16 '0xfe) 24 15) 12 15 13 9 10) (c '1
 
 sexpr = "(((%s . %s) . %s) . (%s . %s))" % (taproot, taghash, tapleaf, tapbranch, tappath)
 print(f"env={sexpr}")
-rep = Rep(SExpr.compile(sexpr))
+rep = Rep(Compiler.compile(sexpr))
   # usage: (a 8 '(V . SCRIPT) PATH IPK SPK 7 5 6 12)
 
 rep("(a 8 '(0xc1 . 0x20e9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1ac0063036f726401010a746578742f706c61696e00337b2270223a226272632d3230222c226f70223a226d696e74222c227469636b223a22656f7262222c22616d74223a223130227d68) nil '0xe9d8184a170affaac4f7924a31899b1668a49d7d857b8cec611e79f39c5c7ba1 '0xc142718fddee89867607e1eeb6e1aab685285e5c78c9ffd2f379c68d52bcb0b6 7 5 6 12)")
