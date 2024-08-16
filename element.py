@@ -558,10 +558,12 @@ class SExpr:
         return s[m.end():], m
 
     @classmethod
-    def parse(cls, s, many=False):
+    def parse(cls, s, many=False, manypy=False):
         where = 0
         end = len(s)
         parstack = [[]]
+
+        if manypy: many = True
 
         while s != "":
             s, m = cls.get_token(s)
@@ -609,7 +611,7 @@ class SExpr:
             while len(parstack[-1]) > 1 and parstack[-1][0] == "tick":
                 assert len(parstack[-1]) == 2
                 q = parstack.pop()
-                parstack[-1].append(Element.Cons(Element.Atom(0), q[1]))
+                parstack[-1].append(Element.Cons(Element.Symbol('q'), q[1]))
 
             if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
                 raise Exception("cannot have multiple elements after . in list")
@@ -624,6 +626,8 @@ class SExpr:
             if len(parstack[0]) > 1:
                 raise Exception("multiple unbracketed entries")
             return parstack[0][0]
+        elif manypy:
+            return parstack[0]
         else:
             return cls.list_to_element(parstack[0])
 
