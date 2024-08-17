@@ -75,18 +75,6 @@ class Continuation:
             c.deref()
             c = c.parent
 
-    def argument(self, arg):
-        if self.fn is None:
-            self.fn = arg
-        else:
-            self.fn.val2.argument(arg)
-
-    def finish(self):
-        if self.fn is None:
-            return Element.Error("function without operator??")
-        v = self.fn.val2.finish()
-        return v
-
 @dataclass
 class WorkItem:
     value: Element
@@ -99,7 +87,10 @@ class WorkItem:
             return self.value
 
         cont = self.continuation
-        cont.argument(self.value)
+        if cont.fn is None:
+            cont.fn = self.value
+        else:
+            cont.fn.val2.argument(self.value)
 
         if cont.args.kind == CONS:
             self.value, cont.args = steal_list(cont.args)
@@ -108,24 +99,54 @@ class WorkItem:
 
         assert cont.args.is_nil()
 
-        self.value = cont.finish()
-        self.is_result = True
-        self.symbols = cont.symbols
+        if cont.fn is None:
+            return Element.Error("function without operator??")
+        fin = cont.fn.val2.finish()
+        if isinstance(fin, Element):
+            self.value = fin
+            self.is_result = True
+            self.symbols = cont.symbols
+        else:
+            env, fin = fin
+            if env is None:
+                self.value = fin
+                self.is_result = False
+                self.symbols = cont.symbols
+            else:
+                self.value = Element.Error("cannot specify environment with a in symbolic mode")
+                fin.deref()
+                self.is_result = True
+                self.symbols = cont.symbols
+
         p = cont.parent
         self.continuation.deref()
         self.continuation = p
         return self
 
     def finished(self):
-        if self.is_result and self.continuation is None: return True
-        if self.value.kind == ERROR: return True
+        if self.is_result and self.continuation is None:
+            return True
 
     def step(self):
+        if self.value.kind == SYMBOL and self.value.val1 == 'q' and self.continuation is not None and self.continuation.fn is None:
+            self.value.deref()
+            self.value = self.continuation.args
+            self.is_result = True
+            self.symbols = self.continuation.symbols
+            self.continuation = self.continuation.parent
+            return
+
+        if self.value.kind == ERROR:
+            if self.continuation is not None: self.continuation.deref_all()
+            self.is_result = True
+        elif self.value.kind == ATOM or self.value.kind == FUNC:
+            self.is_result = True
+
         if self.is_result:
             self.feedback()
-        elif self.value.kind == ERROR or self.value.kind == ATOM or self.value.kind == FUNC:
-            self.is_result = True
-        elif self.value.kind == CONS:
+            return
+
+        if self.value.kind == CONS:
              h, t = steal_list(self.value)
              newcon = Continuation(args=t, symbols=self.symbols, parent=self.continuation)
              self.continuation = newcon
@@ -146,25 +167,25 @@ def symbolic_eval(sexpr, symbols):
     wi = WorkItem(value=sexpr.bumpref(), symbols=symbols, continuation=None)
 
     while not wi.finished():
-        if wi.is_result:
-            print(f">*> {wi.value}")
-        else:
-            print(f">>> {wi.value}")
-        ct = wi.continuation
-        while ct is not None:
-            print(f"  >>> {ct}")
-            ct = ct.parent
         wi.step()
 
-    if wi.continuation is not None: wi.continuation.deref_all()
     return wi.value
 
 class BTCLispRepl(cmd.Cmd):
     def __init__(self, prompt=None):
         self.prompt = ">>> " if prompt is None else prompt
         self.symbols = SymbolTable()
+        self.wi = None
 
         cmd.Cmd.__init__(self)
+
+    def show_state(self):
+        if self.wi is None: return
+        print(f" --- {self.wi.value}")
+        c = self.wi.continuation
+        while c is not None:
+            print(f"   -- {c.fn}    {c.args}")
+            c = c.parent
 
     def do_exit(self, arg):
         return True
@@ -180,6 +201,43 @@ class BTCLispRepl(cmd.Cmd):
         print(r)
         r.deref()
         s.deref()
+
+    @handle_exc
+    def do_debug(self, arg):
+        if self.wi is not None:
+            print("Already debugging an expression")
+            return
+        sexpr = SExpr.parse(arg)
+        self.wi = WorkItem(value=sexpr, symbols=self.symbols, continuation=None)
+        self.show_state()
+
+    @handle_exc
+    def do_step(self, arg):
+        if self.wi is None:
+            print("No expression being debugged")
+            return
+        elif self.wi.finished():
+            print(f"Result: {self.wi.value}")
+            self.wi.value.deref()
+            self.wi = None
+            return
+
+        self.wi.step()
+        self.show_state()
+
+    @handle_exc
+    def do_cont(self, arg):
+        if self.wi is None:
+            print("No expression being debugged")
+            return
+
+        while not self.wi.finished():
+            self.wi.step()
+
+        print(f"Result: {self.wi.value}")
+        self.wi.value.deref()
+        self.wi = None
+        return
 
     @handle_exc
     def do_def(self, arg):
