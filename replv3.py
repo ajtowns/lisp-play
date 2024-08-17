@@ -12,6 +12,39 @@ from typing import Optional, Tuple, Any, Self
 from element import Element, SExpr, nil, ATOM, CONS, ERROR, REF, SYMBOL, FUNC
 from funcs import SExpr_FUNCS, Op_FUNCS, Operator
 
+##########
+
+# To do:
+#
+#  * funcv2.py
+#  * drop lazy eval
+#  * have FUNC's use their data element more often
+#  * have them have a better repr()
+#  * implement op_partial
+#
+#  * make def work at all
+#  * separate symbols into  pre-defined, global, local
+#  * make function calls work
+#
+#  * make bll evaluation work
+#  * make compilation work
+#  * make symbolic evaluation work when invoked with compiled code
+#    (does the first argument to a contain symbols? symbolic, no env. else,
+#     bll, potentially with env)
+#
+#  * add tx/utxo commands
+#
+#  * add tui debugger
+#
+#  * do stuff about costs?
+#  * do stuff about ensuring refcounting is correct?
+#
+# possibly:
+#    def (factorial x (= acc 1))  (a (i x '(factorial (- x 1) (* acc x)) 'acc))
+#    eval (factorial 7)
+
+##########
+
 ####
 
 def handle_exc(func):
