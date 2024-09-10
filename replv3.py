@@ -9,8 +9,8 @@ import traceback
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any, Self
 
-from element import Element, SExpr, nil, ATOM, CONS, ERROR, REF, SYMBOL, FUNC
-from funcs import SExpr_FUNCS, Op_FUNCS, Operator
+from element2 import Element, SExpr, nil, ATOM, CONS, ERROR, SYMBOL, FUNC
+from opcodes import SExpr_FUNCS, Op_FUNCS, Operator
 
 ##########
 
@@ -34,14 +34,39 @@ from funcs import SExpr_FUNCS, Op_FUNCS, Operator
 #
 #  * add tx/utxo commands
 #
-#  * add tui debugger
-#
 #  * do stuff about costs?
 #  * do stuff about ensuring refcounting is correct?
+#
+#  * add tui debugger (via "textual" module?)
 #
 # possibly:
 #    def (factorial x (= acc 1))  (a (i x '(factorial (- x 1) (* acc x)) 'acc))
 #    eval (factorial 7)
+
+##########
+
+# how does compilation work?
+# i guess i want something that will interpret from just numbers?
+
+#    def (foo a b c) (* (+ a b) (+ a c) 3)
+#    ; (foo 1 2 3)
+
+#    $foo = (* (+ 9 13) (+ 9 7) (nil . 3))    ## whatever values * and + are
+
+#    def (bar a) (foo a (+ a 1) (+ a 2))
+#    def (qux a) (+ a 2)
+
+#    $bar = (a 8 2 (b 3 (+ 3 (q . 1)) (+ 3 (q . 2))))
+
+#    (a (i X bar qux) 9)
+#    (a (i X 12 6) (q . 9))
+
+#    that's basically the "if" construction anyway? except with arguments
+
+# if we did elements2.py, perhaps we could tag elements as to whether they
+# reference a symbol/function/etc?, or are bll-compatible?
+# if we did that, should continuations become elements? with a special type, or
+# just semi-structured?
 
 ##########
 
@@ -76,17 +101,39 @@ def steal_list(l):
 
 class SymbolTable:
     def __init__(self):
-        self.syms = []
+        self.globals = {}
+        self.locals = {}
 
     def lookup(self, sym):
         if sym in SExpr_FUNCS:
             op = Op_FUNCS[SExpr_FUNCS[sym]]
             return Element.Func(nil.bumpref(), op())
 
-        for t in self.syms:
-            if sym in t: return t[sym]
+        # locals override globals, but do not override builtins
+        if sym in self.locals: return self.locals[sym].bumpref()
+        if sym in self.globals: return self.globals[sym].bumpref()
 
         return None
+
+    def set_global(self, sym, value):
+        assert isinstance(sym, str)
+
+        if self.locals: raise Exception("trying to set global when locals are set")
+        if sym in SExpr_FUNCS: return False
+
+        self.globals[sym] = value
+        return True
+
+    def set_local(self, sym, value):
+        assert isinstance(sym, str)
+
+        if sym in SExpr_FUNCS: return False
+
+        self.locals[sym] = value
+        return True
+
+
+#### evaluation model = workitem with continuations
 
 @dataclass
 class Continuation:
@@ -161,6 +208,11 @@ class WorkItem:
             return True
 
     def step(self):
+        # rewriting
+        # (eval x) -> *x
+        # (q x y z) --> (x y z) done
+        # (if a b c) --> (eval (i a (q . b) (q . c)))
+
         if self.value.kind == SYMBOL and self.value.val1 == 'q' and self.continuation is not None and self.continuation.fn is None:
             self.value.deref()
             self.value = self.continuation.args
@@ -184,10 +236,6 @@ class WorkItem:
              newcon = Continuation(args=t, symbols=self.symbols, parent=self.continuation)
              self.continuation = newcon
              self.value = h
-        elif self.value.kind == REF:
-            x = self.value.val1.bumpref()
-            self.value.deref()
-            self.value = x
         elif self.value.kind == SYMBOL:
             x = self.value.val1
             y = self.symbols.lookup(x)
@@ -219,6 +267,12 @@ class BTCLispRepl(cmd.Cmd):
         while c is not None:
             print(f"   -- {c.fn}    {c.args}")
             c = c.parent
+
+    def default(self, line):
+        if line.strip().startswith(";"):
+            # comment
+            return
+        return super().default(line)
 
     def do_exit(self, arg):
         return True
@@ -276,8 +330,19 @@ class BTCLispRepl(cmd.Cmd):
     def do_def(self, arg):
         s = SExpr.parse(arg, manypy=True)
         if len(s) != 2:
-            raise Exception("expected symbol name (plus parameters) and definition")
-        print(s)
+            print("Expected symbol name (plus parameters) and definition")
+            for e in s: e.deref()
+            return
+        sym, val = s
+        if sym.kind == SYMBOL:
+            self.symbols.set_global(sym.val1, val.bumpref())
+        elif sym.kind == CONS and sym.val1.kind == SYMBOL:
+            self.symbols.set_global(sym.val1.val1, [sym.val2.bumpref(), val.bumpref()])
+        else:
+            print("Expected symbol name (plus parameters) and definition")
+            for e in s: e.deref()
+            return
+        for e in s: e.deref()
 
 if __name__ == "__main__":
     if os.isatty(sys.stdin.fileno()):
