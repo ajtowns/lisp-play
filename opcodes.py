@@ -8,7 +8,7 @@ import verystable.core.messages
 import verystable.core.script
 import verystable.core.secp256k1
 
-from element2 import Element, ALLOCATOR, ATOM, CONS, ERROR, FUNC, SerDeser, nil
+from element2 import Element, Atom, Cons, Error, Func, SerDeser
 
 def get_env(n, env):
     if n < 0:
@@ -68,7 +68,7 @@ class Tree:
             if self.tree[i] is None:
                 self.tree[i] = element
                 return
-            element = Element.Cons(self.tree[i], element)
+            element = Cons(self.tree[i], element)
             self.tree[i] = None
             i += 1
         self.tree.append(element)
@@ -80,7 +80,7 @@ class Tree:
             if x is None:
                 x = el
             else:
-                x = Element.Cons(el, x)
+                x = Cons(el, x)
         return x
 
 # we have two sorts of FUNC Element:
@@ -120,10 +120,10 @@ class fn_tree(Function):
         assert an <= bn
         if an < bn:
             return None
-        nt = Element.Cons(
-                Element.Cons(
-                   Element.Atom(an + 1),
-                   Element.Cons(b.val2.bumpref(), a.val2.bumpref())
+        nt = Cons(
+                Cons(
+                   Atom(an + 1),
+                   Cons(b.val2.bumpref(), a.val2.bumpref())
                 ),
                 treeish.val2.val2.bumpref()
              )
@@ -136,7 +136,7 @@ class fn_tree(Function):
         while True:
             t2 = cls.merge_one(el.val1.val1)
             if t2 is None: break
-            el.replace_func_state(Element.Cons( t2, el.val1.val2.bumpref() ))
+            el.replace_func_state(Cons( t2, el.val1.val2.bumpref() ))
 
     def collapse(self, el):
         assert el.kind == FUNC and el.val2 is self
@@ -148,7 +148,7 @@ class fn_tree(Function):
         res = t.val1.val2.bumpref()
         while t.val2.kind == CONS:
             t = t.val2
-            res = Element.Cons(t.val1.val2.bumpref(), res)
+            res = Cons(t.val1.val2.bumpref(), res)
         if res.kind == CONS:
             el.replace(CONS, res.val1.bumpref(), res.val2.bumpref())
             res.deref()
@@ -172,9 +172,9 @@ class fn_tree(Function):
             return None
         else:
             sofar = r.left.el.bumpref()
-            add = Element.Cons(Element.Atom(0), r.right.left.el.bumpref())
+            add = Cons(Atom(0), r.right.left.el.bumpref())
             later = r.right.right.el.bumpref()
-            new = Element.Cons( Element.Cons(add, sofar), later)
+            new = Cons( Cons(add, sofar), later)
             el.replace_func_state(new)
             self.merge(el)
             return None
@@ -227,7 +227,7 @@ def check_complete(el, basespec, who):
                 basespec.set_error(elcmp.bumpref())
                 break
             elif not spec.ok(elcmp):
-                basespec.set_error(Element.Error(f"unexpected kind in {who} {elcmp.kind} {spec.__class__.__name__} {elcmp} from {orig} line {sys._getframe(1).f_lineno}"))
+                basespec.set_error(Error(f"unexpected kind in {who} {elcmp.kind} {spec.__class__.__name__} {elcmp} from {orig} line {sys._getframe(1).f_lineno}"))
                 break
             el = elcmp
         queue.extend(spec.set(el))
@@ -265,7 +265,7 @@ class fn_eval(Function):
             return None
         if n == 0:
             # nil goes to nil
-            assert False # el.replace(REF, Element.Atom(0))
+            assert False # el.replace(REF, Atom(0))
             return None
         while n > 1:
             c_env = env.get_complete()
@@ -276,7 +276,7 @@ class fn_eval(Function):
                 return None
             env = c_env.val1 if n % 2 == 0 else c_env.val2
             n //= 2
-            el.replace_func_state(Element.Cons(Element.Atom(n), env.bumpref()))
+            el.replace_func_state(Cons(Atom(n), env.bumpref()))
         assert False # el.replace(REF, env.bumpref())
         return None
 
@@ -297,19 +297,19 @@ class fn_eval(Function):
         if op is None:
             el.set_error("unknown opcode")
             return None
-        args = Element.Func(Element.Cons(opcode_args.bumpref(), env.bumpref()), fn_eval_list())
+        args = Func(Cons(opcode_args.bumpref(), env.bumpref()), fn_eval_list())
         if opcode_num == 1:
             # special case so that (a X) == (a X 1)
-            el.replace(FUNC, Element.Cons(env.bumpref(), args), op())
+            el.replace(FUNC, Cons(env.bumpref(), args), op())
         else:
             el.replace(FUNC, args, op())
         return None
 
     def eval_op_program(self, el, prog, args, env):
         assert prog.kind == CONS
-        prog = Element.Func(Element.Cons(prog.bumpref(), env.bumpref()), fn_eval())
-        progargs = Element.Cons(prog, args.bumpref())
-        el.replace_func_state(Element.Cons(progargs, env.bumpref()))
+        prog = Func(Cons(prog.bumpref(), env.bumpref()), fn_eval())
+        progargs = Cons(prog, args.bumpref())
+        el.replace_func_state(Cons(progargs, env.bumpref()))
         return prog
 
 class fn_eval_list(Function):
@@ -329,8 +329,8 @@ class fn_eval_list(Function):
         else:
             env = r.right.el
             a,b = r.left.left.el, r.left.right.el
-            head = Element.Func(Element.Cons(a.bumpref(), env.bumpref()), fn_eval())
-            tail = Element.Func(Element.Cons(b.bumpref(), env.bumpref()), fn_eval_list())
+            head = Func(Cons(a.bumpref(), env.bumpref()), fn_eval())
+            tail = Func(Cons(b.bumpref(), env.bumpref()), fn_eval_list())
             el.replace(CONS, head, tail)
             return None
 
@@ -388,7 +388,7 @@ class Operator(Function):
         fin = self.finish()
         if isinstance(fin, list):
             newenv, program = fin
-            el.replace(FUNC, Element.Cons(program, newenv), fn_eval())
+            el.replace(FUNC, Cons(program, newenv), fn_eval())
         else:
             assert fin._refs > 0
             if fin._refs == 1:
@@ -443,10 +443,10 @@ class op_b(Operator):
         self.save = el
 
     def finish(self):
-        if self.save is None: return Element.Atom(0)
-        tree_args = Element.Cons(Element.Atom(0), self.save)
+        if self.save is None: return Atom(0)
+        tree_args = Cons(Atom(0), self.save)
         self.save = None
-        return Element.Func(tree_args, fn_tree())
+        return Func(tree_args, fn_tree())
 
     def abandon(self):
        return [self.save] if self.save is not None else []
@@ -476,7 +476,7 @@ class op_i(Operator):
             if self.then:
                 self.result = argspec.el
             else:
-                self.result = Element.Atom(0)
+                self.result = Atom(0)
                 argspec.el.deref()
         elif self.state == 2:
             if not self.then:
@@ -496,7 +496,7 @@ class op_i(Operator):
             if self.then:
                 self.result = el
             else:
-                self.result = Element.Atom(0)
+                self.result = Atom(0)
                 el.deref()
         elif self.state == 2:
             if not self.then:
@@ -525,7 +525,7 @@ class op_softfork(Operator):
     def argument(self, el):
         el.deref()
     def finish(self):
-        return Element.Atom(True)
+        return Atom(1)
 
 class op_h(Operator):
     def argument(self, el):
@@ -578,7 +578,7 @@ class op_l(Operator):
     def finish(self):
         if self.state == 0:
             raise Exception("l: must provide list argument")
-        return Element.Atom(self.r)
+        return Atom(self.r)
 
 class op_c(Operator):
     # (c head tail), (c h1 h2 h3 tail)
@@ -603,11 +603,11 @@ class op_c(Operator):
         if improper_list:
             self.set_error_improper_list(el)
         elif r.el.is_atom():
-            assert False # el.replace(REF, Element.Atom(0))
+            assert False # el.replace(REF, Atom(0))
         elif r.right.el.is_atom():
             assert False # el.replace(REF, r.left.el.bumpref())
         else:
-            el.replace(CONS, r.left.el.bumpref(), Element.Func(r.right.el.bumpref(), op_c()))
+            el.replace(CONS, r.left.el.bumpref(), Func(r.right.el.bumpref(), op_c()))
         ALLOCATOR.record_work(30)
         return None
 
@@ -620,7 +620,7 @@ class op_nand(Operator):
             self.b = True
         el.deref()
     def finish(self):
-        return Element.Atom(self.b)
+        return Atom(self.b)
 
 class op_and(Operator):
     # aka are all true?
@@ -631,7 +631,7 @@ class op_and(Operator):
             self.b = False
         el.deref()
     def finish(self):
-        return Element.Atom(self.b)
+        return Atom(self.b)
 
 class op_or(Operator):
     # aka are any true?
@@ -642,7 +642,7 @@ class op_or(Operator):
             self.b = True
         el.deref()
     def finish(self):
-        return Element.Atom(self.b)
+        return Atom(self.b)
 
 class op_eq(Operator):
     def __init__(self):
@@ -664,7 +664,7 @@ class op_eq(Operator):
         if self.h is not None:
             self.h.deref()
             self.h = None
-        return Element.Atom(self.ok)
+        return Atom(self.ok)
     def abandon(self):
        return [self.h] if self.h is not None else []
 
@@ -677,7 +677,7 @@ class op_strlen(Operator):
         self.v += el.val2
         el.deref()
    def finish(self):
-        return Element.Atom(self.v)
+        return Atom(self.v)
 
 class op_cat(Operator):
     def __init__(self):
@@ -704,7 +704,7 @@ class op_cat(Operator):
             el.deref()
 
     def finish(self):
-        if self.build is None: return Element.Atom(0)
+        if self.build is None: return Atom(0)
         b = self.build
         self.build = None
         return b
@@ -733,7 +733,7 @@ class op_substr(Operator):
         el = self.el
         self.el = None
 
-        if el is None: return Element.Atom(0)
+        if el is None: return Atom(0)
         if self.start is None: return el
         if self.start == 0:
             if self.end is None: return el
@@ -742,7 +742,7 @@ class op_substr(Operator):
             self.end = el.val2
         if self.start > el.val2:
             el.deref()
-            return Element.Atom(0)
+            return Atom(0)
         if el.val2 <= 8:
             m = 0xFFFF_FFFF_FFFF_FFFF
             n = el.val1
@@ -751,9 +751,9 @@ class op_substr(Operator):
             assert 0 <= q
             assert q <= m
             print("XXX", hex(q), self.end-self.start)
-            s = Element.Atom(q, self.end-self.start)
+            s = Atom(q, self.end-self.start)
         else:
-            s = Element.Atom(el.val1[self.start:self.end])
+            s = Atom(el.val1[self.start:self.end])
         el.deref()
         return s
 
@@ -765,12 +765,12 @@ class op_add_u64(Operator):
         self.i = 0
 
     def argument(self, el):
-        self.i += el.atom_as_u64()
-        self.i %= 0x1_0000_0000_0000_0000
+        if el.is_atom():
+            self.i += el.as_int()
         el.deref()
 
     def finish(self):
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 class op_mul_u64(Operator):
     def __init__(self):
@@ -783,7 +783,7 @@ class op_mul_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 class op_mod_u64(Operator):
     def __init__(self):
@@ -802,7 +802,7 @@ class op_mod_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 class op_nand_u64(Operator):
     def __init__(self):
@@ -815,7 +815,7 @@ class op_nand_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Element.Atom(0xFFFF_FFFF_FFFF_FFFF ^ self.i)
+        return Atom(0xFFFF_FFFF_FFFF_FFFF ^ self.i)
 
 class op_and_u64(Operator):
     def __init__(self):
@@ -828,7 +828,7 @@ class op_and_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 class op_or_u64(Operator):
     def __init__(self):
@@ -841,7 +841,7 @@ class op_or_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 class op_xor_u64(Operator):
     def __init__(self):
@@ -854,7 +854,7 @@ class op_xor_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 class op_sub_u64(Operator):
     def __init__(self):
@@ -873,7 +873,7 @@ class op_sub_u64(Operator):
     def finish(self):
         if self.i is None:
             raise Exception("sub: missing arguments")
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 # op_mod / op_divmod
 class op_div_u64(Operator):
@@ -895,7 +895,7 @@ class op_div_u64(Operator):
     def finish(self):
         if self.i is None:
             raise Exception("div: missing arguments")
-        return Element.Atom(self.i)
+        return Atom(self.i)
 
 class op_lt_str(Operator):
     def __init__(self):
@@ -926,7 +926,7 @@ class op_lt_str(Operator):
         if self.last is not None:
             self.last.deref()
             self.last = None
-        return Element.Atom(self.ok)
+        return Atom(self.ok)
 
     def abandon(self):
         return [self.last] if self.last is not None else []
@@ -961,7 +961,7 @@ class op_list_read(Operator):
 
     def finish(self):
         if self.el is None:
-            return Element.Error(f"rd: argument required")
+            return Error(f"rd: argument required")
         edeser = SerDeser().Deserialize(self.el.atom_as_bytes())
         self.el.deref()
         self.el = None
@@ -981,11 +981,11 @@ class op_list_write(Operator):
 
     def finish(self):
         if self.el is None:
-            return Element.Error(f"rd: argument required")
+            return Error(f"rd: argument required")
         eser = SerDeser().Serialize(self.el)
         self.el.deref()
         self.el = None
-        return Element.Atom(eser)
+        return Atom(eser)
 
 class op_sha256(Operator):
     def __init__(self):
@@ -1001,21 +1001,21 @@ class op_sha256(Operator):
         el.deref()
 
     def finish(self):
-        return Element.Atom(self.st.digest())
+        return Atom(self.st.digest())
 
 class op_hash160(op_sha256):
     def finish(self):
         x = hashlib.new("ripemd160")
         x.update(self.st.digest())
         ALLOCATOR.record_work(256)
-        return Element.Atom(x.digest())
+        return Atom(x.digest())
 
 class op_hash256(op_sha256):
     def finish(self):
         x = hashlib.sha256()
         x.update(self.st.digest())
         ALLOCATOR.record_work(256)
-        return Element.Atom(x.digest())
+        return Atom(x.digest())
 
 class op_secp256k1_muladd(Operator):
     """(secp256k1_muladd a (b) (c . d) (1 . e) (nil . f))
@@ -1076,8 +1076,8 @@ class op_secp256k1_muladd(Operator):
         x = verystable.core.secp256k1.GE.mul(*self.aps)
         if not x.infinity:
             print("XXX muladd", [(a, p.to_bytes_compressed().hex()) for (a,p) in self.aps])
-            return Element.Error(f"secp256k1_muladd: did not sum to inf {x.to_bytes_compressed().hex()}")
-        return Element.Atom(1)
+            return Error(f"secp256k1_muladd: did not sum to inf {x.to_bytes_compressed().hex()}")
+        return Atom(1)
 
 class op_bip340_verify(Operator):
     def __init__(self):
@@ -1105,9 +1105,9 @@ class op_bip340_verify(Operator):
         m.deref()
         sig.deref()
         if fail:
-            return Element.Error("bip340_verify: invalid, non-empty signature")
+            return Error("bip340_verify: invalid, non-empty signature")
         else:
-            return Element.Atom(r)
+            return Atom(r)
 
 class op_bip342_txmsg(Operator):
     def __init__(self):
@@ -1131,7 +1131,7 @@ class op_bip342_txmsg(Operator):
             if len(w) > 0 and w[-1][0] == 0x50:
                 annex = w[-1]
         r = verystable.core.script.TaprootSignatureHash(txTo=GLOBAL_TX, spent_utxos=GLOBAL_UTXOS, hash_type=self.sighash, input_index=GLOBAL_TX_INPUT_IDX, scriptpath=True, annex=annex, script=GLOBAL_TX_SCRIPT)
-        return Element.Atom(r)
+        return Atom(r)
 
 class op_tx(Operator):
     def __init__(self):
@@ -1155,13 +1155,13 @@ class op_tx(Operator):
             self.r = result
         elif self.last_cons is None:
             # XXX should release this progressively like op_c
-            self.last_cons = Element.Cons(result, Element.Atom(0))
-            self.r = Element.Cons(self.r, self.last_cons)
+            self.last_cons = Cons(result, Atom(0))
+            self.r = Cons(self.r, self.last_cons)
         else:
             assert self.last_cons.is_cons()
             assert self.last_cons.val2.is_atom()
             assert self.last_cons.val2.val2 == 0
-            self.last_cons.val2 = Element.Cons(result, self.last_cons.val2)
+            self.last_cons.val2 = Cons(result, self.last_cons.val2)
             self.last_cons = self.last_cons.val2
         argspec.el.deref()
 
@@ -1200,17 +1200,17 @@ class op_tx(Operator):
 
     def get_tx_global_info(self, code):
         if code == 0:
-            return Element.Atom(GLOBAL_TX.nVersion, 4)
+            return Atom(GLOBAL_TX.nVersion, 4)
         elif code == 1:
-            return Element.Atom(GLOBAL_TX.nLockTime, 4)
+            return Atom(GLOBAL_TX.nLockTime, 4)
         elif code == 2:
-            return Element.Atom(len(GLOBAL_TX.vin))
+            return Atom(len(GLOBAL_TX.vin))
         elif code == 3:
-            return Element.Atom(len(GLOBAL_TX.vout))
+            return Atom(len(GLOBAL_TX.vout))
         elif code == 4:
-            return Element.Atom(GLOBAL_TX_INPUT_IDX)
+            return Atom(GLOBAL_TX_INPUT_IDX)
         elif code == 5:
-            return Element.Atom(GLOBAL_TX.serialize_without_witness())
+            return Atom(GLOBAL_TX.serialize_without_witness())
         elif code == 6:
             # the TapLeaf hash for the current script
             wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
@@ -1220,9 +1220,9 @@ class op_tx(Operator):
                 v = (wit[n][0] & 0xFE)
                 s = wit[n-1]
                 h = verystable.core.key.TaggedHash("TapLeaf", bytes([v]) + verystable.core.messages.ser_string(s))
-                return Element.Atom(h)
+                return Atom(h)
             else:
-                return Element.Atom(0)
+                return Atom(0)
         elif code == 7:
             # taproot internal pubkey
             raise Exception("unimplemented")
@@ -1232,39 +1232,39 @@ class op_tx(Operator):
         # should also be able to pull out control block information,
         # eg merkle path and internal pubkey
         else:
-            return Element.Atom(0)
+            return Atom(0)
 
     def get_tx_input_info(self, code, which):
         txin = GLOBAL_TX.vin[which]
         wit = GLOBAL_TX.wit.vtxinwit[which].scriptWitness.stack
         coin = GLOBAL_UTXOS[which]
         if code == 10:
-             return Element.Atom(txin.nSequence, 4)
+             return Atom(txin.nSequence, 4)
         elif code == 11:
-             return Element.Atom(verystable.core.messages.ser_uint256(txin.prevout.hash))
+             return Atom(verystable.core.messages.ser_uint256(txin.prevout.hash))
         elif code == 12:
-             return Element.Atom(txin.prevout.n, 4)
+             return Atom(txin.prevout.n, 4)
         elif code == 13:
-             return Element.Atom(txin.scriptSig)
+             return Atom(txin.scriptSig)
         elif code == 14:
              # annex, including 0x50 prefix
              if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
-                 return Element.Atom(wit[-1])
+                 return Atom(wit[-1])
              else:
-                 return Element.Atom(0)
+                 return Atom(0)
         elif code == 15:
-             return Element.Atom(coin.nValue, 8)
+             return Atom(coin.nValue, 8)
         elif code == 16:
-             return Element.Atom(coin.scriptPubKey)
+             return Atom(coin.scriptPubKey)
         else:
-             return Element.Atom(0)
+             return Atom(0)
 
     def get_tx_output_info(self, code, which):
         out = GLOBAL_TX.vout[which]
         if code == 20:
-             return Element.Atom(out.nValue, 8)
+             return Atom(out.nValue, 8)
         elif code == 21:
-             return Element.Atom(out.scriptPubKey)
+             return Atom(out.scriptPubKey)
         else:
              return Element.Atom(0)
 

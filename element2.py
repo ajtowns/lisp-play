@@ -61,263 +61,211 @@ ALLOCATOR = Allocator()
 
 # kinds
 ATOM=255
-SYMBOL=254
-CONS=253
-ERROR=252
-FUNC=251
+CONS=254
+ERROR=253
+FUNC=252
+
+SYMBOL=251
+SYMDEF=250
+
+
+def int_to_bytes(i):
+    if i == 0:
+        return b''
+    neg = (i < 0)
+    if neg:
+        i = -i
+    s = (i.bit_length() + 7)//8
+    b = i.to_bytes(s, byteorder='little', signed=False)
+    if b[-1] < 0x80:
+        b, d = b[:-1], b[-1]
+    else:
+        d = 0
+    if neg:
+        b += bytes([d+0x80])
+    else:
+        b += bytes([d])
+    return b
+
+def bytes_to_int(b):
+    if b == b'':
+        return 0
+    i, m = 0, 1
+    for v in b[:-1]:
+        i += v*m
+        m *= 256
+    i += (b[-1] % 0x80)*m
+    if b[-1] >= 0x80:
+        i = -i
+    return i
 
 class Element:
-    re_printable = re.compile(b"^[a-zA-Z0-9 _()<>,.\"*:'/%+-]+$")
-    _nil = None
-    _one = None
-
-    def __init__(self, kind, val1, val2=None):
-        ALLOCATOR.alloc(24, self)
-        self._refs = 1
-        self.set(kind, val1, val2)
-
-    def alloc_size(self):
-        if self.kind != ATOM or self.val2 <= 8: return 24
-        return 24 + 16 + ((self.val2+15) // 16) * 16
-
-    def set(self, kind, val1, val2):
-        ## previous contents should already have been derefed
-        if kind == ATOM:
-            assert isinstance(val2, int)
-            assert (isinstance(val1, int) and 0 <= val2 <= 8) or (isinstance(val1, bytes) and val2 > 8 and val2 == len(val1))
-        elif kind == CONS:
-            assert isinstance(val1, Element) and isinstance(val2, Element)
-        elif kind == ERROR:
-            assert isinstance(val1, Element) and val2 is None
-            assert val1.kind != ATOM or val1.val2 > 8
-        elif kind == FUNC:
-            assert isinstance(val1, Element) and val2 is not None
-        elif kind == SYMBOL:
-            # no memory management of val1 is done
-            assert isinstance(val1, str) and val2 is None
-        else:
-            assert False, "invalid kind"
-
-        self.kind = kind
+    kind = None
+    def __init__(self, val1, val2):
+        assert self.kind is not None
+        if hasattr(self, "refcnt"): return
+        self.refcnt = 1
         self.val1 = val1
         self.val2 = val2
-        if kind == ATOM and val2 > 8:
-            ALLOCATOR.realloc(24, self.alloc_size(), self)
+        ALLOCATOR.alloc(self.alloc_size(), self)
 
-    def bumpref(self):
-        assert self._refs > 0
-        self._refs += 1
-        return self
+    def alloc_size(self):
+        raise NotImplementedError
+
+    def child_elements(self):
+        raise NotImplementedError
+
+    @staticmethod
+    def deref_add_to_stack(stk, els):
+        for el in els:
+            assert el.refcnt > 0
+            el.refcnt -= 1
+            if el.refcnt <= 0:
+                stk.append(el)
+        return stk
 
     @classmethod
     def deref_stack(cls, stk):
         while stk:
-            f = stk.pop()
-            assert f._refs >= 1, f"double-free of {f}"
-            f._refs -= 1
-            if f._refs == 0:
-                f.deref_parts(stk)
-                ALLOCATOR.free(f.alloc_size(), f)
-
-    @classmethod
-    def toderef(cls, stk, *els):
-        for el in els:
-            if el._refs > 1:
-                el._refs -= 1
-            else:
-                stk.append(el)
-        return stk
-
-    def deref_parts(self, stk):
-        if self.kind == ATOM:
-            pass
-        elif self.kind == CONS:
-            if self.val2.kind == ATOM:
-                self.toderef(stk, self.val1, self.val2)
-            else:
-                self.toderef(stk, self.val2, self.val1)
-        elif self.kind == FUNC:
-            self.toderef(stk, self.val1)
-            assert not hasattr(self.val2, "abandoned")
-            self.val2.abandoned = 1
-            for sub_el in self.val2.abandon():
-                self.toderef(stk, sub_el)
-        elif self.kind == SYMBOL:
-            pass
-        else: # ERROR, FN
-            self.toderef(stk, self.val1)
-            assert not isinstance(self.val2, Element)
-        return stk
+            el = stk.pop()
+            assert el.refcnt == 0
+            cls.deref_add_to_stack(stk, el.child_elements())
+            ALLOCATOR.free(el.alloc_size(), el)
 
     def deref(self):
-        self.deref_stack(self.toderef([], self))
+        self.deref_stack(self.deref_add_to_stack([], [self]))
 
-    def replace(self, kind, val1, val2=None):
-        assert self.kind == FUNC
-        self.deref_stack(self.deref_parts([]))
-        if self.kind == ATOM and self.val2 > 8:
-            ALLOCATOR.realloc(self.alloc_size(), 24, self)
-        self.set(kind, val1, val2)
+    def bumpref(self):
+        assert self.refcnt > 0
+        self.refcnt += 1
+        return self
 
-    def replace_func_state(self, new_val1):
-        assert self.kind == FUNC
-        self.val1.deref()
-        self.val1 = new_val1
-
-    def set_error(self, msg):
-        if isinstance(msg, (str, bytes)):
-            msg = Element.Atom(msg)
-        self.replace(ERROR, msg)
-
-    def is_nil(self):
-        return self.kind == ATOM and self.val1 == 0 and self.val2 == 0
-
-    @classmethod
-    def Nil(cls):
-        if cls._nil is None:
-            cls._nil = cls(ATOM, 0, 0)
-            cls._nil.bumpref()
-        return cls._nil.bumpref()
-
-    @classmethod
-    def One(cls):
-        if cls._one is None:
-            cls._one = cls(ATOM, 1, 1)
-            cls._one.bumpref()
-        return cls._one.bumpref()
-
-    @classmethod
-    def Atom(cls, data, length=None):
-        if length is not None:
-            assert isinstance(data, int) and data >= 0 and data <= 0xFFFF_FFFF_FFFF_FFFF
-            assert data == 0 or length >= (data.bit_length() + 7) // 8
-            assert length <= 8
-            if length == 0: return cls.Nil()
-            if length == 1 and data == 1: return cls.One()
-            return cls(ATOM, data, length)
-        if data == False or data == 0 or data is None or data == '' or data == b'':
-            return cls.Nil()
-        if data == True or data == 1 or data == '\x01' or data == b'\x01':
-            return cls.One()
-
-        if isinstance(data, str):
-            data = data.encode('utf8')
-        elif isinstance(data, int):
-            assert data > 0 and data <= 0xFFFF_FFFF_FFFF_FFFF
-            bl = (data.bit_length() + 7)//8
-            return cls(ATOM, data, bl)
-        assert isinstance(data, bytes)
-        if len(data) <= 8:
-            i = int.from_bytes(data, byteorder='little', signed=False)
-            return cls(ATOM, i, len(data)) # in place
-        else:
-            return cls(ATOM, data, len(data))
-
-    @classmethod
-    def Cons(cls, left, right):
-        return cls(CONS, left, right)
-
-    def cons_to_pylist(self):
-        l = []
-        while self.kind == CONS:
-            l.append(self.val1)
-            self = self.val2
-        if not self.is_nil(): return None
-        return l
-
-    @classmethod
-    def Symbol(cls, sym):
-        return cls(SYMBOL, sym)
-
-    @classmethod
-    def Error(cls, msg):
-        if isinstance(msg, (str, bytes)):
-            msg = cls.Atom(msg)
-        return cls(ERROR, msg)
-
-    @classmethod
-    def Func(cls, args, fn):
-        return cls(FUNC, args, fn)
-
-    def dupe_atom(self):
-        assert self.kind == ATOM
-        assert self._refs > 1
-        v = self.val1
-        if isinstance(v, bytes):
-            v = v[:] # copy
-        else:
-            assert isinstance(v, int) # don't need to copy
-        replace = Element(ATOM, v, self.val2)
-        self.deref()
-        return replace
+    def __repr__(self): return f"El<{self}>"
+    def __str__(self): raise Exception(f"unimplemented {self.__class__}.__str__()")
 
     def is_atom(self):
         return self.kind == ATOM
-
+    def is_nil(self):
+        return self.kind == ATOM and self.val1 == 0
     def is_cons(self):
         return self.kind == CONS
-
     def is_error(self):
         return self.kind == ERROR
-
+    def is_func(self):
+        return self.kind == FUNC
     def is_symbol(self):
         return self.kind == SYMBOL
+    def is_symdef(self):
+        return self.kind == SYMDEF
 
-    def get_complete(self):
-        if self.kind in [ATOM,CONS,ERROR]:
-            return self
+    def PyList(self):
+        e, l = self, []
+        while e.is_cons():
+            l.append(e.val1)
+            e = e.val2
+        if e.is_nil():
+            return l
         return None
 
-    def atom_as_bytes(self):
-        assert self.kind == ATOM
-        if self.val2 <= 8:
-            return self.val1.to_bytes(self.val2, byteorder='little', signed=False)
-        else:
-            return self.val1
+class Store(Element):
+    def __init__(self, value):
+        super().__init__(len(value), value)
 
-    def atom_as_u64_short(self):
-        assert self.kind == ATOM
-        if self.val2 > 8: return None
-        if self.val2 != (self.val1.bit_length() + 7)//8: return None
-        return self.val1
+    def alloc_size(self):
+        return 24 + 16 + ((self.val1+15) // 16) * 16
 
-    def atom_as_u64(self):
-        assert self.kind == ATOM
-        if self.val2 <= 8:
-            assert isinstance(self.val1, int) and 0 <= self.val1 <= 0xFFFF_FFFF_FFFF_FFFF
-            return self.val1
-        else:
-            return int.from_bytes(self.val1[:8], byteorder='little', signed=False)
+    def child_elements(self):
+        return []
 
-    def __repr__(self): return f"El<{self}>"
+class Pair(Element):
+    def __init__(self, left, right):
+        super().__init__(left, right)
+
+    def alloc_size(self):
+        return 24
+
+    def child_elements(self):
+        return [self.val1, self.val2]
+
+    def steal_children(self):
+        r = (self.val1.bumpref(), self.val2.bumpref())
+        self.deref()
+        return r
+
+class Atom(Store):
+    re_printable = re.compile(b"^[a-zA-Z0-9 _()<>,.\"*:'/%+-]+$")
+    kind = ATOM
+
+    nil = None
+    one = None
+
+    def __new__(cls, value):
+        if isinstance(value, int):
+            value = int_to_bytes(value)
+        assert isinstance(value, bytes)
+        is_nil = (value == b'')
+        is_one = (value == b'\x01')
+        if is_nil and cls.nil is not None:
+            return cls.nil.bumpref()
+        if is_one and cls.one is not None:
+            return cls.one.bumpref()
+        el = super().__new__(cls)
+        if is_nil:
+            cls.nil = el
+        if is_one:
+            cls.one = el
+        return el
+
+    def __init__(self, value):
+        if isinstance(value, int):
+            value = int_to_bytes(value)
+        super().__init__(value)
+
     def __str__(self):
-        if self.is_symbol():
-            return "<%s>" % (self.val1)
-        elif self.is_nil():
+        if self.val1 == 0:
             return "nil"
-        elif self.is_atom():
-            if self.val2 == 0 or (self.val1 != 0 and self.val2 == 1):
-                return str(self.val1)
-            else:
-                v = self.atom_as_bytes()
-                if self.re_printable.match(v):
-                    return '"%s"' % (v.decode('utf8'),)
-                else:
-                    return "0x%s" % (v.hex(),)
-        elif self.is_cons():
-            x = []
-            while self.val2.is_cons():
-                x.append(self.val1)
-                self = self.val2
-            x.append(self.val1)
-            if not self.val2.is_nil():
-                x.append(".")
-                x.append(self.val2)
-            return "(%s)" % " ".join(map(str, x))
-        elif self.is_error():
-            return "ERR(%s)" % (str(self.val1))
+        elif self.val1 < 3:
+            return "%d" % self.as_int()
         else:
-            return "FN(%s,%s)" % (self.val2.__class__.__name__, str(self.val1))
+            if self.re_printable.match(self.val2):
+                return '"%s"' % (self.val2.decode('utf8'),)
+            else:
+                return "0x%s" % (self.val2.hex(),)
+
+    def as_int(self):
+        return bytes_to_int(self.val2)
+
+class Error(Store):
+    kind = ERROR
+    def __str__(self):
+        return "ERR(%s)" % (self.val1)
+
+class Symbol(Store):
+    kind = SYMBOL
+    def __str__(self):
+        return "<%s>" % (self.val2)
+
+class Cons(Pair):
+    kind = CONS
+
+    def __str__(self):
+        x = []
+        while self.val2.is_cons():
+            x.append(self.val1)
+            self = self.val2
+        x.append(self.val1)
+        if not self.val2.is_nil():
+            x.append(".")
+            x.append(self.val2)
+        return "(%s)" % " ".join(map(str, x))
+
+class Func(Pair):
+    kind = FUNC
+    def child_elements(self):
+        return [self.val1]
+
+    def __str__(self):
+        return "FN(%s,%s)" % (self.val2.__class__.__name__, str(self.val1))
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51
@@ -367,25 +315,25 @@ class SerDeser:
         else:
             quoted = False
         if code == 0:
-            el = Element.Atom(0)
+            el = Atom(0)
         elif code <= self.MAX_QUICK_ONEBYTE:
-            el = Element.Atom(code)
+            el = Atom(code)
         elif code == self.QUICK_LEFTOVER:
             code2 = self._read(1)[0]
             if code2 == 0 or code2 > self.MAX_QUICK_ONEBYTE:
-                el = Element.Atom(code2, 1)
+                el = Atom(bytes([code2]))
             else:
                 s = code2 + self.MAX_QUICK_MULTIBYTE
-                el = Element.Atom(self._read(s))
+                el = Atom(self._read(s))
         elif code < self.SLOW_MULTIBYTE:
             s = code - self.QUICK_MULTIBYTE_OFFSET
-            el = Element.Atom(self._read(s))
+            el = Atom(self._read(s))
         elif code == self.SLOW_MULTIBYTE:
             s = 0
             while (x := self._read(1)[0]) == 255:
                 s += x
             s += x
-            el = Element.Atom(self._read(s))
+            el = Atom(self._read(s))
         else:
             # cons!
             if code <= self.QUICK_IMPROPER_OFFSET:
@@ -413,14 +361,14 @@ class SerDeser:
             # naughty if not quoted and ls[0]=nil
 
             if closed:
-                el = Element.Atom(0)
+                el = Atom(0)
             else:
                 el = self._Deserialize()
                 # naughty if el=nil
             for e in reversed(ls):
-                el = Element.Cons(e, el)
+                el = Cons(e, el)
         if quoted:
-            el = Element.Cons(Element.Atom(0), el)
+            el = Cons(Atom(0), el)
         return el
 
     def Serialize(self, el):
@@ -523,10 +471,10 @@ class SExpr:
             t = l[-1]
             l = l[:-2]
         else:
-            t = Element.Atom(0)
+            t = Atom(0)
         assert None not in l
         for h in reversed(l):
-            t = Element.Cons(h, t)
+            t = Cons(h, t)
         return t
 
     @classmethod
@@ -579,18 +527,18 @@ class SExpr:
                 else:
                     raise Exception("unparsable/unknown atom %r" % (a,))
                 if is_sym:
-                    parstack[-1].append(Element.Symbol(a))
+                    parstack[-1].append(Symbol(a))
                 elif a == b'' or a == 0:
-                    parstack[-1].append(Element.Atom(0))
+                    parstack[-1].append(Atom(0))
                 else:
-                    parstack[-1].append(Element.Atom(a))
+                    parstack[-1].append(Atom(a))
             else:
                 raise Exception("BUG: unhandled match")
 
             while len(parstack[-1]) > 1 and parstack[-1][0] == "tick":
                 assert len(parstack[-1]) == 2
                 q = parstack.pop()
-                parstack[-1].append(Element.Cons(Element.Symbol('q'), q[1]))
+                parstack[-1].append(Cons(Symbol('q'), q[1]))
 
             if len(parstack[-1]) > 3 and parstack[-1][-3] is None:
                 raise Exception("cannot have multiple elements after . in list")
@@ -610,5 +558,5 @@ class SExpr:
         else:
             return cls.list_to_element(parstack[0])
 
-nil = Element.Atom(0)
-one = Element.Atom(1)
+nil = Atom(0)
+one = Atom(1)

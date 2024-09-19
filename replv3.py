@@ -9,7 +9,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any, Self
 
-from element2 import Element, SExpr, nil, ATOM, CONS, ERROR, SYMBOL, FUNC
+from element2 import Element, SExpr, Atom, Cons, Error, Symbol, Func
 from opcodes import SExpr_FUNCS, Op_FUNCS, Operator
 
 ##########
@@ -84,18 +84,12 @@ def handle_exc(func):
 ####
 
 def list_takes_tail(head, tail):
-     l = Element.Cons(head, tail)
+     l = Cons(head, tail)
      tail.deref()
      return l
 
 def quote(value):
-     return list_takes_tail(Element.Symbol('q'), value)
-
-def steal_list(l):
-    assert isinstance(l, Element) and l.is_cons()
-    h, t = l.val1.bumpref(), l.val2.bumpref()
-    l.deref()
-    return h, t
+     return list_takes_tail(Symbol('q'), value)
 
 ####
 
@@ -107,7 +101,7 @@ class SymbolTable:
     def lookup(self, sym):
         if sym in SExpr_FUNCS:
             op = Op_FUNCS[SExpr_FUNCS[sym]]
-            return Element.Func(nil.bumpref(), op())
+            return Func(Atom(0), op())
 
         # locals override globals, but do not override builtins
         if sym in self.locals: return self.locals[sym].bumpref()
@@ -172,15 +166,15 @@ class WorkItem:
         else:
             cont.fn.val2.argument(self.value)
 
-        if cont.args.kind == CONS:
-            self.value, cont.args = steal_list(cont.args)
+        if cont.args.is_cons():
+            self.value, cont.args = cont.args.steal_children()
             self.is_result = False
             return self
 
         assert cont.args.is_nil()
 
         if cont.fn is None:
-            return Element.Error("function without operator??")
+            return Error("function without operator??")
         fin = cont.fn.val2.finish()
         if isinstance(fin, Element):
             self.value = fin
@@ -193,7 +187,7 @@ class WorkItem:
                 self.is_result = False
                 self.symbols = cont.symbols
             else:
-                self.value = Element.Error("cannot specify environment with a in symbolic mode")
+                self.value = Error("cannot specify environment with a in symbolic mode")
                 fin.deref()
                 self.is_result = True
                 self.symbols = cont.symbols
@@ -213,7 +207,7 @@ class WorkItem:
         # (q x y z) --> (x y z) done
         # (if a b c) --> (eval (i a (q . b) (q . c)))
 
-        if self.value.kind == SYMBOL and self.value.val1 == 'q' and self.continuation is not None and self.continuation.fn is None:
+        if self.value.is_symbol() and self.value.val1 == 'q' and self.continuation is not None and self.continuation.fn is None:
             self.value.deref()
             self.value = self.continuation.args
             self.is_result = True
@@ -221,23 +215,22 @@ class WorkItem:
             self.continuation = self.continuation.parent
             return
 
-        if self.value.kind == ERROR:
+        if self.value.is_error():
             if self.continuation is not None: self.continuation.deref_all()
             self.is_result = True
-        elif self.value.kind == ATOM or self.value.kind == FUNC:
+        elif self.value.is_atom() or self.value.is_func():
             self.is_result = True
 
         if self.is_result:
             self.feedback()
             return
 
-        if self.value.kind == CONS:
-             h, t = steal_list(self.value)
+        if self.value.is_cons():
+             self.value, t = self.value.steal_children()
              newcon = Continuation(args=t, symbols=self.symbols, parent=self.continuation)
              self.continuation = newcon
-             self.value = h
-        elif self.value.kind == SYMBOL:
-            x = self.value.val1
+        elif self.value.is_symbol():
+            x = self.value.val2
             y = self.symbols.lookup(x)
             self.value = y
             return
@@ -334,9 +327,9 @@ class BTCLispRepl(cmd.Cmd):
             for e in s: e.deref()
             return
         sym, val = s
-        if sym.kind == SYMBOL:
+        if sym.is_symbol():
             self.symbols.set_global(sym.val1, val.bumpref())
-        elif sym.kind == CONS and sym.val1.kind == SYMBOL:
+        elif sym.is_cons() and sym.val1.is_symbol():
             self.symbols.set_global(sym.val1.val1, [sym.val2.bumpref(), val.bumpref()])
         else:
             print("Expected symbol name (plus parameters) and definition")
