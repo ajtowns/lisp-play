@@ -2,6 +2,7 @@
 
 import hashlib
 import sys
+from typing import final
 
 import verystable.core.key
 import verystable.core.messages
@@ -83,357 +84,59 @@ class Tree:
                 x = Cons(el, x)
         return x
 
-# we have two sorts of FUNC Element:
-#  - fn_foo which subclasses Function directly which is for
-#    internal handling
-#  - op_foo which subclasses Operator which is for opcodes,
-#    and handles one operand at a time in order to allow
-#    the (partial ...) opcode to work
-
-class Function:
-    def __init__(self):
-        pass # setup internal state
-
-    def abandon(self):
-        return [] # return list of elements to abandon
-
-    def resolve(self, el):
-        el.set_error("resolve unimplemented")
-        return None
-
-    def set_error_improper_list(self, el, what="program"):
-        el.set_error(f"{what} specified as improper list (non-nil terminator)")
-
-class fn_tree(Function):
-    """for lazily constructing a minimal binary tree from elements in
-       a list"""
+class Opcode:
+    @classmethod
+    @final
+    def make_func(cls):
+        return Func(cls.initial_state(), cls())
 
     @classmethod
-    def merge_one(cls, treeish):
-        if treeish.kind != CONS: return None
-        if treeish.val2.kind != CONS: return None
-        a = treeish.val1
-        b = treeish.val2.val1
-        assert a.kind == CONS and b.kind == CONS
-        assert a.val1.kind == ATOM and b.val1.kind == ATOM
-        an, bn = a.val1.atom_as_u64(), b.val1.atom_as_u64()
-        assert an <= bn
-        if an < bn:
-            return None
-        nt = Cons(
-                Cons(
-                   Atom(an + 1),
-                   Cons(b.val2.bumpref(), a.val2.bumpref())
-                ),
-                treeish.val2.val2.bumpref()
-             )
-        return nt
+    @final
+    def opcode_name(cls):
+        return cls.__name__
 
+    @staticmethod
+    def initial_state():
+        return Atom(0)
+    def argument(self, state, arg): raise NotImplementedError
+    def finish(self, state): raise NotImplementedError
+
+class BinOpcode(Opcode):
+    """For opcodes that are essentially binary operators"""
     @classmethod
-    def merge(cls, el):
-        # FUNC( CONS( treeish, args ), .. )
-        if el.kind != FUNC or el.val1.kind != CONS: return
-        while True:
-            t2 = cls.merge_one(el.val1.val1)
-            if t2 is None: break
-            el.replace_func_state(Cons( t2, el.val1.val2.bumpref() ))
+    def binop(cls, left, right):
+        raise NotImplementedError
 
-    def collapse(self, el):
-        assert el.kind == FUNC and el.val2 is self
-        assert el.val1.kind == CONS
-        assert el.val1.val1.kind == CONS # built something
-        t = el.val1.val1
-        assert t.kind == CONS
-        assert t.val1.kind == CONS
-        res = t.val1.val2.bumpref()
-        while t.val2.kind == CONS:
-            t = t.val2
-            res = Cons(t.val1.val2.bumpref(), res)
-        if res.kind == CONS:
-            el.replace(CONS, res.val1.bumpref(), res.val2.bumpref())
-            res.deref()
+    @final
+    @classmethod
+    def argument(cls, state, arg):
+        r = cls.binop(state, arg)
+        arg.deref()
+        return Func(r, cls)
+
+    @final
+    @staticmethod
+    def finish(state):
+        return state.bumpref()
+
+class op_x(Opcode):
+    # XXX perhaps should actually combine the args and include a message
+    def argument(self, state, arg):
+        arg.deref()
+        return Error()
+
+    def finish(state):
+        return Error()
+
+class op_add(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if left.is_atom() and right.is_atom():
+            return Atom(left.as_int() + right.as_int())
         else:
-            assert False # el.replace(REF, r.err)
+            return Error()
 
-    def resolve(self, el):
-        assert el.kind == FUNC and el.val2 is self
-        # CONS( nil|cons(cons(atom,none)) , nil|cons(none,none) )
-        r = check_complete(el.val1, xCO(xANY(), xATCO(xANY(), xANY())), "tree")
-        if r.want is not None:
-            return r.want
-        if r.err is not None:
-            assert False # el.replace(REF, r.err)
-            return None
-        if r.right.el.is_atom():
-            if r.right.el.is_nil():
-                self.collapse(el)
-            else:
-                self.set_error_improper_list(el, "tree")
-            return None
-        else:
-            sofar = r.left.el.bumpref()
-            add = Cons(Atom(0), r.right.left.el.bumpref())
-            later = r.right.right.el.bumpref()
-            new = Cons( Cons(add, sofar), later)
-            el.replace_func_state(new)
-            self.merge(el)
-            return None
-
-class xANY:
-    err = None
-    want = None
-
-    def __str__(self):
-        return f"{self.__class__} {self.err} {self.want} {getattr(self, 'el', None)}"
-    def ok(self, el): return True
-    def set(self, el):
-        self.el = el
-        return self.sub()
-    def sub(self): return []
-
-    def set_error(self, err):
-        self.err = err
-    def set_want(self, want):
-        self.want = want
-
-class xAT(xANY):
-    def ok(self, el): return el.kind == ATOM
-
-class xATCO(xANY):
-    def ok(self, el): return el.kind == CONS or el.kind == ATOM
-    def __init__(self, left, right):
-        self.left = left
-        self.right = right
-    def sub(self):
-        if self.el.kind == CONS:
-            return [(self.left, self.el.val1), (self.right, self.el.val2)]
-        else:
-            return []
-
-class xCO(xATCO):
-    def ok(self, el): return el.kind == CONS
-
-def check_complete(el, basespec, who):
-    orig = el
-    queue = [(basespec, el)]
-    while queue:
-        spec, el = queue.pop(0)
-        if not spec.ok(el):
-            elcmp = el.get_complete()
-            if elcmp is None:
-                basespec.set_want(el)
-                break
-            elif elcmp.kind == ERROR:
-                basespec.set_error(elcmp.bumpref())
-                break
-            elif not spec.ok(elcmp):
-                basespec.set_error(Error(f"unexpected kind in {who} {elcmp.kind} {spec.__class__.__name__} {elcmp} from {orig} line {sys._getframe(1).f_lineno}"))
-                break
-            el = elcmp
-        queue.extend(spec.set(el))
-    return basespec
-
-class fn_eval(Function):
-    def resolve(self, el):
-        assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1,
-                xCO(xATCO(xATCO(xANY(), xANY()), xANY()), xANY()),
-                "eval"
-        )
-
-        if r.want is not None:
-            return r.want
-        if r.err is not None:
-            assert False # el.replace(REF, r.err)
-            return None
-
-        if r.left.el.is_atom():
-            # CONS(ATOM,None)  -- env lookup (0->nil; 1->env; 1+->split env)
-            return self.env_access(el, r.left.el, r.right.el)
-        elif r.left.left.el.is_atom():
-            # CONS(CONS(ATOM,None),None) -- program lookup
-            return self.eval_opcode(el, r.left.left.el, r.left.right.el, r.right.el)
-        else:
-            # CONS(CONS(CONS,None),None) -- eval program to determine program
-            return self.eval_op_program(el, r.left.left.el, r.left.right.el, r.right.el)
-
-    def env_access(self, el, exp, env):
-        assert exp.kind == ATOM
-        n = exp.atom_as_u64_short()
-        if n is None:
-            el.set_error("invalid value for env lookup")
-            return None
-        if n == 0:
-            # nil goes to nil
-            assert False # el.replace(REF, Atom(0))
-            return None
-        while n > 1:
-            c_env = env.get_complete()
-            if c_env is None:
-                return env
-            if c_env.kind != CONS:
-                el.set_error("invalid env path")
-                return None
-            env = c_env.val1 if n % 2 == 0 else c_env.val2
-            n //= 2
-            el.replace_func_state(Cons(Atom(n), env.bumpref()))
-        assert False # el.replace(REF, env.bumpref())
-        return None
-
-    def eval_opcode(self, el, opcode_id, opcode_args, env):
-        assert opcode_id.kind == ATOM
-        if opcode_id.val2 > 8:
-            el.set_error("env lookup out of range")
-            return None
-        opcode_num = opcode_id.atom_as_u64_short()
-        if opcode_num is None:
-            el.set_error("function id out of range")
-            return None
-        if opcode_num == 0:
-            # q! special case
-            assert False # el.replace(REF, opcode_args.bumpref())
-            return None
-        op = Op_FUNCS.get(opcode_num, None)
-        if op is None:
-            el.set_error("unknown opcode")
-            return None
-        args = Func(Cons(opcode_args.bumpref(), env.bumpref()), fn_eval_list())
-        if opcode_num == 1:
-            # special case so that (a X) == (a X 1)
-            el.replace(FUNC, Cons(env.bumpref(), args), op())
-        else:
-            el.replace(FUNC, args, op())
-        return None
-
-    def eval_op_program(self, el, prog, args, env):
-        assert prog.kind == CONS
-        prog = Func(Cons(prog.bumpref(), env.bumpref()), fn_eval())
-        progargs = Cons(prog, args.bumpref())
-        el.replace_func_state(Cons(progargs, env.bumpref()))
-        return prog
-
-class fn_eval_list(Function):
-    def resolve(self, el):
-        assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, xCO(xATCO(xANY(), xANY()), xANY()), "eval_list")
-
-        if r.want is not None:
-            return r.want
-        if r.err is not None:
-            assert False # el.replace(REF, r.err)
-            return None
-
-        if r.left.el.is_atom():
-            assert False # el.replace(REF, r.left.el.bumpref())
-            return None
-        else:
-            env = r.right.el
-            a,b = r.left.left.el, r.left.right.el
-            head = Func(Cons(a.bumpref(), env.bumpref()), fn_eval())
-            tail = Func(Cons(b.bumpref(), env.bumpref()), fn_eval_list())
-            el.replace(CONS, head, tail)
-            return None
-
-# Probably want some variants of Operator?
-#   ability to have a hidden "state" Element or not (cat, substr, etc?)
-#     ie func( cons( state, args ), self )
-#     maybe it should always have a state, and just use nil if not
-#     needed? then optimise it later if desired?
-#   not everything needs the operand resolved to atom/cons:
-#     op_a just passes the first argument to fn_eval, and the rest
-#       to op_tree. which is a super intriguing thing to think about
-#       wrt partial becoming an optimisation? not sure if op_tree is
-#       correct for its state having multiple references? it's also
-#       currently fn_tree
-# Functionality
-#   three functions can be called:
-#      __init__() -- setup state
-#      argument() -- passes in an atom/cons for processing
-#      finish()   -- indicates all arguments have been passed in and
-#                   the nil end of list has been reacheda
-#   responses from finish():
-#      update el (currently by returning it, which is lame)
-#      or return a list which is used to update el (also lame)
-#   responses from argument():
-#      currently nothing, but probably should be able to say "skip
-#        next argument (if present)" so (i c t e) can skip t or e
-#        and (sf n p) can skip p depending on n, etc?
-#        -- want to query a bool as to whether `el` needs evaluating...
-#      should also be able to say "replace me with x", for (c x y z),
-#        since that's cons(x, cons(y, z)) so by the time you see y
-#        you can spit out cons(x, [something])
-#        no -- i think should be able to say "skip remaining arguments"
-#        but that just results in the argument list being evaluated until
-#        the nil terminator (with error if non-nil term), and the replacement
-#        still happening in finish()
-
-class Operator(Function):
-    state = 0
-    def __init__(self):
-        # do any special setup
-        pass
-
-    def argspec(self, argspec):
-        return self.argument(argspec.el)
-
-    def argument(self, el):
-        # handle an argument
-        raise Exception("BUG: argument handling unimplemented")
-
-    def finish(self):
-        # return the result
-        raise Exception("BUG: finish unimplemented")
-
-    def finalize(self, el):
-        fin = self.finish()
-        if isinstance(fin, list):
-            newenv, program = fin
-            el.replace(FUNC, Cons(program, newenv), fn_eval())
-        else:
-            assert fin._refs > 0
-            if fin._refs == 1:
-                el.replace(fin.kind, fin.val1, fin.val2)
-                ALLOCATOR.realloc(fin.alloc_size(), 24, fin)
-                fin.set(ATOM, 0, 0)
-                fin.deref()
-            else:
-                assert False # el.replace(REF, fin)
-
-    def resolve_spec(self):
-        return xATCO(xANY(), xANY())
-
-    def resolve(self, el):
-        assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, xATCO(self.resolve_spec(), xANY()), self.__class__.__name__)
-        if r.want is not None:
-            return r.want
-        if r.err is not None:
-            assert False # el.replace(REF, r.err)
-            return None
-
-        if r.el.is_atom():
-            if r.el.is_nil():
-                self.finalize(el)
-            else:
-                self.set_error_improper_list(el)
-            ALLOCATOR.record_work(30)
-            return None
-        else:
-            hspec = r.left
-            t = r.right.el
-            hspec.el.bumpref()
-            try:
-                self.argspec(hspec)
-                el.replace_func_state(t.bumpref())
-            except AssertionError:
-                raise # This is a bug, so don't worry about memory management
-            except Exception as exc:
-                if exc.__class__ != Exception: raise
-                hspec.el.deref() # Buggy to throw an exception after deref'ing, fine to throw beforehand
-                if len(str(exc)) <= 8: raise exc
-                el.set_error(str(exc))
-            return None
-
+'''
 class op_b(Operator):
     save = None
     def argument(self, el):
@@ -450,15 +153,6 @@ class op_b(Operator):
 
     def abandon(self):
        return [self.save] if self.save is not None else []
-
-class op_x(Operator):
-    def __init__(self):
-        self.x = []
-    def argument(self, el):
-        self.x.append(repr(i))
-        el.deref()
-    def finish(self):
-        raise Exception(" ".join(self.x))
 
 class op_i(Operator):
     def resolve_spec(self):
@@ -759,18 +453,6 @@ class op_substr(Operator):
 
     def abandon(self):
        return [self.el] if self.el is not None else []
-
-class op_add_u64(Operator):
-    def __init__(self):
-        self.i = 0
-
-    def argument(self, el):
-        if el.is_atom():
-            self.i += el.as_int()
-        el.deref()
-
-    def finish(self):
-        return Atom(self.i)
 
 class op_mul_u64(Operator):
     def __init__(self):
@@ -1277,10 +959,12 @@ class op_tx(Operator):
     def abandon(self):
         return [self.r] if self.r is not None else []
 
-FUNCS = [
-  (b'', "q", None), # quoting indicator, special
+'''
 
-  # (0x01, "a", op_a),  # apply
+FUNCS = [
+#  (b'', "q", None), # quoting indicator, special
+
+#  (0x01, "a", op_a),  # apply
 #  (0x99, "partial", op_partial),  # partially apply the following function
      ## can be continued by being used as an opcode, or be another op_partial
      ## means i need to make argument()/finish() the standard way of doing
@@ -1288,65 +972,66 @@ FUNCS = [
      ## XXX note that this implies the ability to deep-copy the state of
      ## any functions that are partial'ed
   (0x02, "x", op_x),  # exception
-  (0x03, "i", op_i),  # eager-evaluated if
-  (0x04, "sf", op_softfork),
+#  (0x03, "i", op_i),  # eager-evaluated if
+#  (0x04, "sf", op_softfork),
      ## should this be magic as in (sf '99 (+ 3 4)) treats "+" according
      ## to "99" softfork rules, or should it be more like (a '(+ 3 4))
      ## where you're expected to quote it first?
 
-  (0x05, "c", op_c), # construct a list, last element is a list
-  (0x06, "h", op_h), # head / car
-  (0x07, "t", op_t), # tail / cdr
-  (0x08, "l", op_l), # is cons?
-  (0x39, "b", op_b), # convert list to binary tree
+#  (0x05, "c", op_c), # construct a list, last element is a list
+#  (0x06, "h", op_h), # head / car
+#  (0x07, "t", op_t), # tail / cdr
+#  (0x08, "l", op_l), # is cons?
+#  (0x39, "b", op_b), # convert list to binary tree
 
-  (0x09, "not", op_nand),
-  (0x0a, "all", op_and),
-  (0x0b, "any", op_or),
+#  (0x09, "not", op_nand),
+#  (0x0a, "all", op_and),
+#  (0x0b, "any", op_or),
 
-  (0x0c, "=", op_eq),
-  (0x0d, "<s", op_lt_str),
-  (0x0e, "strlen", op_strlen),
-  (0x0f, "substr", op_substr),
-  (0x10, "cat", op_cat),
+#  (0x0c, "=", op_eq),
+#  (0x0d, "<s", op_lt_str),
+#  (0x0e, "strlen", op_strlen),
+#  (0x0f, "substr", op_substr),
+#  (0x10, "cat", op_cat),
 
   # not really convinced these make sense as u64 (vs generic bitwise ops)
   # (eg, (~ 0x80) becomes 0x7FFF_FFFF_FFFF_FFFF which is weird)
-  (0x11, "~", op_nand_u64),
-  (0x12, "&", op_and_u64),
-  (0x13, "|", op_or_u64),
-  (0x14, "^", op_xor_u64),
+#  (0x11, "~", op_nand_u64),
+#  (0x12, "&", op_and_u64),
+#  (0x13, "|", op_or_u64),
+#  (0x14, "^", op_xor_u64),
 
-  (0x17, "+", op_add_u64),
-  (0x18, "-", op_sub_u64),
-  (0x19, "*", op_mul_u64),
-  (0x1a, "%", op_mod_u64),
+  (0x17, "+", op_add),
+#  (0x18, "-", op_sub_u64),
+#  (0x19, "*", op_mul_u64),
+#  (0x1a, "%", op_mod_u64),
 #  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))
 #  (0x1c, "<<", op_lshift_u64),
 #  (0x1d, ">>", op_rshift_u64),
 
-  (0x1e, "<", op_lt_lendian),   # not restricted to u64
+#  (0x1e, "<", op_lt_lendian),   # not restricted to u64
 #  (0x1f, "log2b42", op_log2b42_u64),  # returns floor(log_2(x) * 2**42)
       ## allow this to apply to arbitrary atoms?
       ## (log of a 500kB atoms will fit into a u64)
 
-  (0x22, "rd", op_list_read), # read bytes to Element
-  (0x23, "wr", op_list_write), # write Element as bytes
+#  (0x22, "rd", op_list_read), # read bytes to Element
+#  (0x23, "wr", op_list_write), # write Element as bytes
 
-  (0x24, "sha256", op_sha256),
- # (0x25, "ripemd160", op_ripemd160),
-  (0x26, "hash160", op_hash160),
-  (0x27, "hash256", op_hash256),
-  (0x28, "bip340_verify", op_bip340_verify),
+#  (0x24, "sha256", op_sha256),
+#  (0x25, "ripemd160", op_ripemd160),
+#  (0x26, "hash160", op_hash160),
+#  (0x27, "hash256", op_hash256),
+#  (0x28, "bip340_verify", op_bip340_verify),
 #  (0x29, "ecdsa_verify", op_ecdsa_verify),
-  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
+#  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
 
-  (0x2b, "tx", op_tx),
-  (0x2c, "bip342_txmsg", op_bip342_txmsg),
+#  (0x2b, "tx", op_tx),
+#  (0x2c, "bip342_txmsg", op_bip342_txmsg),
 #  (0x2d, "bip345_accrue", op_bip345_accrue),
       ## for simulating op_vault, add the ability to assert that
       ## funds from this input have been distributed to a given output
 ]
+
 
 def _Do_FUNCS():
     se = {}

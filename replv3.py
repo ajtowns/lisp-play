@@ -6,19 +6,17 @@ import os
 import sys
 import traceback
 
-from dataclasses import dataclass
-from typing import Optional, Tuple, Any, Self
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, List, Any, Self
 
 from element2 import Element, SExpr, Atom, Cons, Error, Symbol, Func
-from opcodes import SExpr_FUNCS, Op_FUNCS, Operator
+from opcodes import SExpr_FUNCS, Op_FUNCS
 
 ##########
 
 # To do:
 #
 #  * funcv2.py
-#  * drop lazy eval
-#  * have FUNC's use their data element more often
 #  * have them have a better repr()
 #  * implement op_partial
 #
@@ -83,16 +81,6 @@ def handle_exc(func):
 
 ####
 
-def list_takes_tail(head, tail):
-     l = Cons(head, tail)
-     tail.deref()
-     return l
-
-def quote(value):
-     return list_takes_tail(Symbol('q'), value)
-
-####
-
 class SymbolTable:
     def __init__(self):
         self.globals = {}
@@ -101,7 +89,7 @@ class SymbolTable:
     def lookup(self, sym):
         if sym in SExpr_FUNCS:
             op = Op_FUNCS[SExpr_FUNCS[sym]]
-            return Func(Atom(0), op())
+            return op.make_func()
 
         # locals override globals, but do not override builtins
         if sym in self.locals: return self.locals[sym].bumpref()
@@ -133,54 +121,58 @@ class SymbolTable:
 class Continuation:
     args: Element      # remaining arguments
     symbols: SymbolTable
-    parent: Optional[Self]
     fn: Optional[Element] = None
 
     def __repr__(self):
         return f"Continuation({self.fn}, {self.args})"
 
     def deref(self):
+        # XXX should deref symtable too
         if isinstance(self.fn, Element): self.fn.deref()
         if isinstance(self.args, Element): self.args.deref()
-
-    def deref_all(self):
-        c = self
-        while c is not None:
-            c.deref()
-            c = c.parent
 
 @dataclass
 class WorkItem:
     value: Element
     symbols: SymbolTable
-    continuation: Optional[Continuation]
+    continuations: List[Continuation] = field(default_factory=list)
     is_result: bool = False
 
-    def feedback(self):
-        if self.continuation is None:
-            return self.value
+    def popcont(self):
+        last = self.continuations.pop()
+        last.deref()
 
-        cont = self.continuation
+    def feedback(self):
+        if not self.continuations:
+            return
+
+        cont = self.continuations[-1]
         if cont.fn is None:
             cont.fn = self.value
         else:
-            cont.fn.val2.argument(self.value)
+            cont.fn = cont.fn.apply_argument(self.value)
+        self.value = None
+
+        assert cont.fn is not None
 
         if cont.args.is_cons():
             self.value, cont.args = cont.args.steal_children()
             self.is_result = False
-            return self
+            return
 
-        assert cont.args.is_nil()
+        if not cont.args.is_nil():
+            self.value = Error("improper list in functional expression")
+            return
 
-        if cont.fn is None:
-            return Error("function without operator??")
-        fin = cont.fn.val2.finish()
+        fin = cont.fn.apply_finish()
+        cont.fn = None # dereffed by apply_finish
+
         if isinstance(fin, Element):
             self.value = fin
             self.is_result = True
             self.symbols = cont.symbols
         else:
+            # XXX handling of "a"; probably don't want to do it this way
             env, fin = fin
             if env is None:
                 self.value = fin
@@ -192,31 +184,34 @@ class WorkItem:
                 self.is_result = True
                 self.symbols = cont.symbols
 
-        p = cont.parent
-        self.continuation.deref()
-        self.continuation = p
-        return self
+        self.popcont()
 
     def finished(self):
-        if self.is_result and self.continuation is None:
-            return True
+        return (self.is_result and not self.continuations)
 
     def step(self):
+        if isinstance(self.value, Element):
+            assert self.value.refcnt > 0
         # rewriting
         # (eval x) -> *x
         # (q x y z) --> (x y z) done
         # (if a b c) --> (eval (i a (q . b) (q . c)))
 
-        if self.value.is_symbol() and self.value.val1 == 'q' and self.continuation is not None and self.continuation.fn is None:
+        if self.value.is_symbol() and self.value.val1 == 'q' and self.continuations and self.continuations[-1].fn is None:
+            cont = self.continuations[-1]
             self.value.deref()
-            self.value = self.continuation.args
+            self.value = cont.args
             self.is_result = True
-            self.symbols = self.continuation.symbols
-            self.continuation = self.continuation.parent
+            self.symbols = cont.symbols
+            cont.args = None
+            cont.symbols = None
+            self.popcont()
             return
 
         if self.value.is_error():
-            if self.continuation is not None: self.continuation.deref_all()
+            if self.continuations:
+                self.popcont()
+                return
             self.is_result = True
         elif self.value.is_atom() or self.value.is_func():
             self.is_result = True
@@ -227,8 +222,7 @@ class WorkItem:
 
         if self.value.is_cons():
              self.value, t = self.value.steal_children()
-             newcon = Continuation(args=t, symbols=self.symbols, parent=self.continuation)
-             self.continuation = newcon
+             self.continuations.append(Continuation(args=t, symbols=self.symbols))
         elif self.value.is_symbol():
             x = self.value.val2
             y = self.symbols.lookup(x)
@@ -238,7 +232,7 @@ class WorkItem:
             raise Exception(f"unknwon element kind {self.value.kind}")
 
 def symbolic_eval(sexpr, symbols):
-    wi = WorkItem(value=sexpr.bumpref(), symbols=symbols, continuation=None)
+    wi = WorkItem(value=sexpr.bumpref(), symbols=symbols)
 
     while not wi.finished():
         wi.step()
@@ -256,10 +250,8 @@ class BTCLispRepl(cmd.Cmd):
     def show_state(self):
         if self.wi is None: return
         print(f" --- {self.wi.value}")
-        c = self.wi.continuation
-        while c is not None:
+        for c in reversed(self.wi.continuations):
             print(f"   -- {c.fn}    {c.args}")
-            c = c.parent
 
     def default(self, line):
         if line.strip().startswith(";"):
@@ -288,7 +280,7 @@ class BTCLispRepl(cmd.Cmd):
             print("Already debugging an expression")
             return
         sexpr = SExpr.parse(arg)
-        self.wi = WorkItem(value=sexpr, symbols=self.symbols, continuation=None)
+        self.wi = WorkItem(value=sexpr, symbols=self.symbols)
         self.show_state()
 
     @handle_exc

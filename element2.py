@@ -115,6 +115,11 @@ class Element:
     def child_elements(self):
         raise NotImplementedError
 
+    def is_bll(self):
+        if self.kind == CONS:
+            return self.val1.is_bll() and self.val2.is_bll()
+        return (self.kind == ATOM)
+
     @staticmethod
     def deref_add_to_stack(stk, els):
         for el in els:
@@ -264,8 +269,18 @@ class Func(Pair):
     def child_elements(self):
         return [self.val1]
 
+    def apply_argument(self, arg):
+        a = self.val2.argument(self.val1, arg)
+        self.deref()
+        return a
+
+    def apply_finish(self):
+        f = self.val2.finish(self.val1)
+        self.deref()
+        return f
+
     def __str__(self):
-        return "FN(%s,%s)" % (self.val2.__class__.__name__, str(self.val1))
+        return "FN(%s,%s)" % (self.val2.opcode_name(), str(self.val1))
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51
