@@ -66,8 +66,6 @@ ERROR=253
 FUNC=252
 
 SYMBOL=251
-SYMDEF=250
-
 
 def int_to_bytes(i):
     if i == 0:
@@ -160,8 +158,6 @@ class Element:
         return self.kind == FUNC
     def is_symbol(self):
         return self.kind == SYMBOL
-    def is_symdef(self):
-        return self.kind == SYMDEF
 
     def PyList(self):
         e, l = self, []

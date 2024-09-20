@@ -83,44 +83,45 @@ def handle_exc(func):
 
 class SymbolTable:
     def __init__(self):
-        self.globals = {}
-        self.locals = {}
+        self.refcnt = 1
+        self.syms = {}
 
-    def lookup(self, sym):
-        if sym in SExpr_FUNCS:
-            op = Op_FUNCS[SExpr_FUNCS[sym]]
-            return op.make_func()
+    def set(self, symname, value):
+        # XXX: cope with parameters (and default values for parameters)
+        assert isinstance(symname, str)
 
-        # locals override globals, but do not override builtins
-        if sym in self.locals: return self.locals[sym].bumpref()
-        if sym in self.globals: return self.globals[sym].bumpref()
+        if symname in self.syms:
+            self.syms[symname].deref()
+        self.syms[sym] = value
 
-        return None
+    def bumpref(self):
+        self.refcnt += 1
+        return self
 
-    def set_global(self, sym, value):
-        assert isinstance(sym, str)
+    def deref(self):
+        self.refcnt -= 1
+        if self.refcnt == 0:
+            for _, v in self.syms:
+                v.deref()
+            self.syms = None
 
-        if self.locals: raise Exception("trying to set global when locals are set")
-        if sym in SExpr_FUNCS: return False
+def ResolveSymbol(localsyms, globalsyms, symname):
+    if symname in SExpr_FUNCS:
+        op = Op_FUNCS[SExpr_FUNCS[symname]]
+        return op.make_func()
 
-        self.globals[sym] = value
-        return True
+    # locals override globals, but do not override builtins
+    if symname in localsyms.syms: return localsyms[symname].bumpref()
+    if symname in globalsyms.syms: return globalsyms[symname].bumpref()
 
-    def set_local(self, sym, value):
-        assert isinstance(sym, str)
-
-        if sym in SExpr_FUNCS: return False
-
-        self.locals[sym] = value
-        return True
-
+    return None
 
 #### evaluation model = workitem with continuations
 
 @dataclass
 class Continuation:
     args: Element      # remaining arguments
-    symbols: SymbolTable
+    localsyms: SymbolTable
     fn: Optional[Element] = None
 
     def __repr__(self):
@@ -134,9 +135,10 @@ class Continuation:
 @dataclass
 class WorkItem:
     value: Element
-    symbols: SymbolTable
+    globalsyms: SymbolTable
     continuations: List[Continuation] = field(default_factory=list)
     is_result: bool = False
+    dummylocalsyms: SymbolTable = field(default_factory=SymbolTable)
 
     def popcont(self):
         last = self.continuations.pop()
@@ -170,24 +172,27 @@ class WorkItem:
         if isinstance(fin, Element):
             self.value = fin
             self.is_result = True
-            self.symbols = cont.symbols
         else:
             # XXX handling of "a"; probably don't want to do it this way
             env, fin = fin
             if env is None:
                 self.value = fin
                 self.is_result = False
-                self.symbols = cont.symbols
             else:
                 self.value = Error("cannot specify environment with a in symbolic mode")
                 fin.deref()
                 self.is_result = True
-                self.symbols = cont.symbols
 
         self.popcont()
 
     def finished(self):
         return (self.is_result and not self.continuations)
+
+    def localsyms(self):
+        if self.continuations:
+            return self.continuations[-1].localsyms
+        else:
+            return self.dummylocalsyms
 
     def step(self):
         if isinstance(self.value, Element):
@@ -202,9 +207,8 @@ class WorkItem:
             self.value.deref()
             self.value = cont.args
             self.is_result = True
-            self.symbols = cont.symbols
             cont.args = None
-            cont.symbols = None
+            cont.localsyms.deref()
             self.popcont()
             return
 
@@ -221,18 +225,16 @@ class WorkItem:
             return
 
         if self.value.is_cons():
-             self.value, t = self.value.steal_children()
-             self.continuations.append(Continuation(args=t, symbols=self.symbols))
+            self.value, t = self.value.steal_children()
+            self.continuations.append(Continuation(args=t, localsyms=self.localsyms().bumpref()))
         elif self.value.is_symbol():
-            x = self.value.val2
-            y = self.symbols.lookup(x)
-            self.value = y
+            self.value = ResolveSymbol(self.localsyms(), self.globalsyms, self.value.val2)
             return
         else:
             raise Exception(f"unknwon element kind {self.value.kind}")
 
-def symbolic_eval(sexpr, symbols):
-    wi = WorkItem(value=sexpr.bumpref(), symbols=symbols)
+def symbolic_eval(sexpr, globalsyms):
+    wi = WorkItem(value=sexpr.bumpref(), globalsyms=globalsyms)
 
     while not wi.finished():
         wi.step()
@@ -280,7 +282,7 @@ class BTCLispRepl(cmd.Cmd):
             print("Already debugging an expression")
             return
         sexpr = SExpr.parse(arg)
-        self.wi = WorkItem(value=sexpr, symbols=self.symbols)
+        self.wi = WorkItem(value=sexpr, globalsyms=self.symbols)
         self.show_state()
 
     @handle_exc
@@ -320,7 +322,7 @@ class BTCLispRepl(cmd.Cmd):
             return
         sym, val = s
         if sym.is_symbol():
-            self.symbols.set_global(sym.val1, val.bumpref())
+            self.symbols.set(sym.val1, val.bumpref())
         elif sym.is_cons() and sym.val1.is_symbol():
             self.symbols.set_global(sym.val1.val1, [sym.val2.bumpref(), val.bumpref()])
         else:
