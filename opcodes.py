@@ -120,7 +120,8 @@ class BinOpcode(Opcode):
         return state.bumpref()
 
 class FixOpcode(Opcode):
-    num_args = None
+    min_args = None
+    max_args = None
 
     @classmethod
     def operation(cls, *args):
@@ -137,7 +138,7 @@ class FixOpcode(Opcode):
     @classmethod
     def argument(cls, state, arg):
         n, rest = cls.state_info(state)
-        if n >= cls.num_args:
+        if n >= cls.max_args:
             return Error("too many arguments")
         return Func(Cons(Atom(n+1), Cons(arg, rest.bumpref())), cls)
 
@@ -145,7 +146,7 @@ class FixOpcode(Opcode):
     @classmethod
     def finish(cls, state):
         n, rest = cls.state_info(state)
-        if n != cls.num_args:
+        if n < cls.min_args:
             return Error("too few arguments")
         args = []
         for _ in range(n):
@@ -183,13 +184,25 @@ class op_mul(BinOpcode):
             return Error()
 
 class op_mod(FixOpcode):
-    num_args = 2
+    min_args = 2
+    max_args = 2
 
     @classmethod
     def operation(cls, num, den):
         if not num.is_atom() or not den.is_atom():
             return Error()
         return Atom(num.as_int() % den.as_int())
+
+class op_i(FixOpcode):
+    min_args = 1
+    max_args = 3
+
+    @classmethod
+    def operation(cls, c, t=None, e=None):
+        if c.is_nil():
+            return e.bumpref() if e is not None else c.bumpref()
+        else:
+            return t.bumpref() if t is not None else Atom(1)
 
 '''
 class op_b(Operator):
@@ -208,67 +221,6 @@ class op_b(Operator):
 
     def abandon(self):
        return [self.save] if self.save is not None else []
-
-class op_i(Operator):
-    def resolve_spec(self):
-        # each arg should be either an atom, or a pair of atoms
-        if self.state == 0:
-            return xATCO(xANY(), xANY())
-        else:
-            return xANY()
-
-    def argspec(self, argspec):
-        if self.state == 0:
-            self.then = not argspec.el.is_nil()
-            argspec.el.deref()
-        elif self.state == 1:
-            if self.then:
-                self.result = argspec.el
-            else:
-                self.result = Atom(0)
-                argspec.el.deref()
-        elif self.state == 2:
-            if not self.then:
-                self.result.deref()
-                self.result = argspec.el
-            else:
-                argspec.el.deref()
-        else:
-            raise Exception("i: too many arguments")
-        self.state += 1
-
-    def argument(self, el):
-        if self.state == 0:
-            self.then = not el.is_nil()
-            el.deref()
-        elif self.state == 1:
-            if self.then:
-                self.result = el
-            else:
-                self.result = Atom(0)
-                el.deref()
-        elif self.state == 2:
-            if not self.then:
-                self.result.deref()
-                self.result = el
-            else:
-                el.deref()
-        else:
-            raise Exception("i: too many arguments")
-        self.state += 1
-
-    def finish(self):
-        if self.state == 0:
-            raise Exception("i: must provide condition argument")
-        if self.state == 1:
-            raise Exception("i: must provide then argument")
-        self.state = -1 # done!
-        return self.result
-
-    def abandon(self):
-       if self.state > 1:
-           return [self.result]
-       return []
 
 class op_softfork(Operator):
     def argument(self, el):
@@ -986,8 +938,8 @@ class op_tx(Operator):
 
 FUNCS = [
 #  (b'', "q", None), # quoting indicator, special
-
 #  (0x01, "a", op_a),  # apply
+
 #  (0x99, "partial", op_partial),  # partially apply the following function
      ## can be continued by being used as an opcode, or be another op_partial
      ## means i need to make argument()/finish() the standard way of doing
@@ -995,7 +947,7 @@ FUNCS = [
      ## XXX note that this implies the ability to deep-copy the state of
      ## any functions that are partial'ed
   (0x02, "x", op_x),  # exception
-#  (0x03, "i", op_i),  # eager-evaluated if
+  (0x03, "i", op_i),  # eager-evaluated if
 #  (0x04, "sf", op_softfork),
      ## should this be magic as in (sf '99 (+ 3 4)) treats "+" according
      ## to "99" softfork rules, or should it be more like (a '(+ 3 4))
