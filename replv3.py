@@ -92,7 +92,13 @@ class SymbolTable:
 
         if symname in self.syms:
             self.syms[symname].deref()
-        self.syms[sym] = value
+        self.syms[symname] = value
+
+    def unset(self, symname):
+        assert isinstance(symname, str), f"{repr(symname)} not a str?"
+        if symname in self.syms:
+            self.syms[symname].deref()
+            del self.syms[symname]
 
     def bumpref(self):
         self.refcnt += 1
@@ -111,8 +117,8 @@ def ResolveSymbol(localsyms, globalsyms, symname):
         return op.make_func()
 
     # locals override globals, but do not override builtins
-    if symname in localsyms.syms: return localsyms[symname].bumpref()
-    if symname in globalsyms.syms: return globalsyms[symname].bumpref()
+    if symname in localsyms.syms: return localsyms.syms[symname].bumpref()
+    if symname in globalsyms.syms: return globalsyms.syms[symname].bumpref()
 
     return None
 
@@ -228,7 +234,10 @@ class WorkItem:
             self.value, t = self.value.steal_children()
             self.continuations.append(Continuation(args=t, localsyms=self.localsyms().bumpref()))
         elif self.value.is_symbol():
-            self.value = ResolveSymbol(self.localsyms(), self.globalsyms, self.value.val2)
+            sym = self.value.val2
+            self.value = ResolveSymbol(self.localsyms(), self.globalsyms, sym)
+            if self.value is None:
+                self.value = Error(f"Unknown symbol {sym}")
             return
         else:
             raise Exception(f"unknwon element kind {self.value.kind}")
@@ -322,14 +331,20 @@ class BTCLispRepl(cmd.Cmd):
             return
         sym, val = s
         if sym.is_symbol():
-            self.symbols.set(sym.val1, val.bumpref())
+            self.symbols.set(sym.val2, val.bumpref())
         elif sym.is_cons() and sym.val1.is_symbol():
-            self.symbols.set_global(sym.val1.val1, [sym.val2.bumpref(), val.bumpref()])
+            self.symbols.set(sym.val1.val2, [sym.val2.bumpref(), val.bumpref()])
         else:
             print("Expected symbol name (plus parameters) and definition")
-            for e in s: e.deref()
-            return
-        for e in s: e.deref()
+        for e in s:
+            e.deref()
+
+    @handle_exc
+    def do_undef(self, arg):
+        for x in arg.split():
+            x = x.strip()
+            if x == "": continue
+            self.symbols.unset(x)
 
 if __name__ == "__main__":
     if os.isatty(sys.stdin.fileno()):
