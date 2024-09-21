@@ -204,6 +204,42 @@ class op_i(FixOpcode):
         else:
             return t.bumpref() if t is not None else Atom(1)
 
+class op_sha256(Opcode):
+    def __init__(self, hasher=None):
+        if hasher is None:
+            self.st = hashlib.sha256()
+        else:
+            self.st = hasher
+
+    def argument(self, state, arg):
+        if not arg.is_atom():
+            raise Exception("sha256: cannot hash list")
+        h = self.st.copy()
+        h.update(arg.val2)
+        return Func(state.bumpref(), self.__class__(h))
+
+    def finish(self, state):
+        return Atom(self.st.digest())
+
+class op_ripemd160(op_sha256):
+    def __init__(self, hasher=None):
+        if hasher is None:
+            self.st = hashlib.new("ripemd160")
+        else:
+            self.st = hasher
+
+class op_hash160(op_sha256):
+    def finish(self, state):
+        x = hashlib.new("ripemd160")
+        x.update(self.st.digest())
+        return Atom(x.digest())
+
+class op_hash256(op_sha256):
+    def finish(self, state):
+        x = hashlib.sha256()
+        x.update(self.st.digest())
+        return Atom(x.digest())
+
 '''
 class op_b(Operator):
     save = None
@@ -644,36 +680,6 @@ class op_list_write(Operator):
         self.el = None
         return Atom(eser)
 
-class op_sha256(Operator):
-    def __init__(self):
-        self.st = hashlib.sha256()
-        self.w = b""
-
-    def argument(self, el):
-        if not el.is_atom():
-            raise Exception("sha256: cannot hash list")
-        self.st.update(el.atom_as_bytes())
-        self.w += el.atom_as_bytes()
-        ALLOCATOR.record_work((el.val2 + 63)//64 * 256)
-        el.deref()
-
-    def finish(self):
-        return Atom(self.st.digest())
-
-class op_hash160(op_sha256):
-    def finish(self):
-        x = hashlib.new("ripemd160")
-        x.update(self.st.digest())
-        ALLOCATOR.record_work(256)
-        return Atom(x.digest())
-
-class op_hash256(op_sha256):
-    def finish(self):
-        x = hashlib.sha256()
-        x.update(self.st.digest())
-        ALLOCATOR.record_work(256)
-        return Atom(x.digest())
-
 class op_secp256k1_muladd(Operator):
     """(secp256k1_muladd a (b) (c . d) (1 . e) (nil . f))
        checks that a*G - b*G + c*D + E - F = 0
@@ -992,10 +998,10 @@ FUNCS = [
 #  (0x22, "rd", op_list_read), # read bytes to Element
 #  (0x23, "wr", op_list_write), # write Element as bytes
 
-#  (0x24, "sha256", op_sha256),
-#  (0x25, "ripemd160", op_ripemd160),
-#  (0x26, "hash160", op_hash160),
-#  (0x27, "hash256", op_hash256),
+  (0x24, "sha256", op_sha256),
+  (0x25, "ripemd160", op_ripemd160),
+  (0x26, "hash160", op_hash160),
+  (0x27, "hash256", op_hash256),
 #  (0x28, "bip340_verify", op_bip340_verify),
 #  (0x29, "ecdsa_verify", op_ecdsa_verify),
 #  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),

@@ -542,7 +542,7 @@ class SExpr:
                 elif a == b'' or a == 0:
                     parstack[-1].append(Atom(0))
                 else:
-                    parstack[-1].append(Atom(a))
+                    parstack[-1].append(Atom(a.encode('utf8')))
             else:
                 raise Exception("BUG: unhandled match")
 
