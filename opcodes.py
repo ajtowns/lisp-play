@@ -119,6 +119,40 @@ class BinOpcode(Opcode):
     def finish(state):
         return state.bumpref()
 
+class FixOpcode(Opcode):
+    num_args = None
+
+    @classmethod
+    def operation(cls, *args):
+        raise NotImplementedError
+
+    @final
+    @staticmethod
+    def state_info(state):
+        if state.is_nil(): return 0, state
+        assert state.is_cons() and state.val1.is_atom()
+        return state.val1.as_int(), state.val2
+
+    @final
+    @classmethod
+    def argument(cls, state, arg):
+        n, rest = cls.state_info(state)
+        if n >= cls.num_args:
+            return Error("too many arguments")
+        return Func(Cons(Atom(n+1), Cons(arg, rest.bumpref())), cls)
+
+    @final
+    @classmethod
+    def finish(cls, state):
+        n, rest = cls.state_info(state)
+        if n != cls.num_args:
+            return Error("too few arguments")
+        args = []
+        for _ in range(n):
+            args.append(rest.val1)
+            rest = rest.val2
+        return cls.operation(*(args[::-1]))
+
 class op_x(Opcode):
     # XXX perhaps should actually combine the args and include a message
     def argument(self, state, arg):
@@ -148,24 +182,14 @@ class op_mul(BinOpcode):
         else:
             return Error()
 
-class op_mod(Opcode):
-    @classmethod
-    def argument(cls, state, arg):
-        if not arg.is_atom():
-            return Error()
-        if state.is_nil():
-            return Func(Cons(Atom(0), arg), cls)
-        elif state.is_cons() and state.val1.is_nil():
-            return Func(Cons(Atom(1), Atom(state.val2.as_int() % arg.as_int())), cls)
-        else:
-            return Error("mod: too many arguments")
+class op_mod(FixOpcode):
+    num_args = 2
 
     @classmethod
-    def finish(cls, state):
-        if state.is_cons() and state.val1.is_atom() and state.val1.val1 == 1 and state.val1.val2 == b'\x01':
-            return state.val2.bumpref()
-        else:
-            return Error("mod: too few arguments")
+    def operation(cls, num, den):
+        if not num.is_atom() or not den.is_atom():
+            return Error()
+        return Atom(num.as_int() % den.as_int())
 
 '''
 class op_b(Operator):
