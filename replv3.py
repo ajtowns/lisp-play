@@ -163,6 +163,11 @@ class WorkItem:
 
         assert cont.fn is not None
 
+        if cont.fn.is_error():
+            self.value = cont.fn
+            cont.fn = None
+            return
+
         if cont.args.is_cons():
             self.value, cont.args = cont.args.steal_children()
             self.is_result = False
