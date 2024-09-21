@@ -136,6 +136,37 @@ class op_add(BinOpcode):
         else:
             return Error()
 
+class op_mul(BinOpcode):
+    @staticmethod
+    def initial_state():
+        return Atom(1)
+
+    @classmethod
+    def binop(cls, left, right):
+        if left.is_atom() and right.is_atom():
+            return Atom(left.as_int() * right.as_int())
+        else:
+            return Error()
+
+class op_mod(Opcode):
+    @classmethod
+    def argument(cls, state, arg):
+        if not arg.is_atom():
+            return Error()
+        if state.is_nil():
+            return Func(Cons(Atom(0), arg), cls)
+        elif state.is_cons() and state.val1.is_nil():
+            return Func(Cons(Atom(1), Atom(state.val2.as_int() % arg.as_int())), cls)
+        else:
+            return Error("mod: too many arguments")
+
+    @classmethod
+    def finish(cls, state):
+        if state.is_cons() and state.val1.is_atom() and state.val1.val1 == 1 and state.val1.val2 == b'\x01':
+            return state.val2.bumpref()
+        else:
+            return Error("mod: too few arguments")
+
 '''
 class op_b(Operator):
     save = None
@@ -453,38 +484,6 @@ class op_substr(Operator):
 
     def abandon(self):
        return [self.el] if self.el is not None else []
-
-class op_mul_u64(Operator):
-    def __init__(self):
-        self.i = 1
-
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("mul: arguments must be atoms")
-        self.i *= el.atom_as_u64()
-        self.i %= 0x1_0000_0000_0000_0000
-        el.deref()
-
-    def finish(self):
-        return Atom(self.i)
-
-class op_mod_u64(Operator):
-    def __init__(self):
-        self.i = None
-        self.state = 0
-
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("mod: arguments must be atoms")
-        if self.i is None:
-            self.i = el.atom_as_u64()
-        elif self.state == 0:
-            self.i %= el.atom_as_u64()
-            self.state = 1
-        else:
-            raise Exception("mod: too many arguments")
-        el.deref()
-
-    def finish(self):
-        return Atom(self.i)
 
 class op_nand_u64(Operator):
     def __init__(self):
@@ -1003,8 +1002,8 @@ FUNCS = [
 
   (0x17, "+", op_add),
 #  (0x18, "-", op_sub_u64),
-#  (0x19, "*", op_mul_u64),
-#  (0x1a, "%", op_mod_u64),
+  (0x19, "*", op_mul),
+  (0x1a, "%", op_mod),
 #  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))
 #  (0x1c, "<<", op_lshift_u64),
 #  (0x1d, ">>", op_rshift_u64),

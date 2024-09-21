@@ -239,7 +239,7 @@ class Atom(Store):
 class Error(Store):
     kind = ERROR
     def __str__(self):
-        return "ERR(%s)" % (self.val1)
+        return "ERR(%s)" % (self.val2)
 
 class Symbol(Store):
     kind = SYMBOL
