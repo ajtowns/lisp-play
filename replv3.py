@@ -215,7 +215,7 @@ class WorkItem:
             return
 
         # rewrite (q . foo)
-        if self.value.is_symbol() and self.value.val1 == 'q' and self.continuations and self.continuations[-1].fn is None:
+        if self.value.is_symbol() and self.value.val2 == 'q' and self.continuations and self.continuations[-1].fn is None:
             cont = self.continuations[-1]
             self.value.deref()
             self.value = cont.args

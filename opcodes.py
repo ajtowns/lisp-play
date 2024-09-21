@@ -114,14 +114,12 @@ class BinOpcode(Opcode):
         arg.deref()
         return Func(r, cls)
 
-    @final
     @staticmethod
     def finish(state):
         return state.bumpref()
 
 class FixOpcode(Opcode):
-    min_args = None
-    max_args = None
+    min_args = max_args = None
 
     @classmethod
     def operation(cls, *args):
@@ -184,8 +182,7 @@ class op_mul(BinOpcode):
             return Error()
 
 class op_mod(FixOpcode):
-    min_args = 2
-    max_args = 2
+    min_args = max_args = 2
 
     @classmethod
     def operation(cls, num, den):
@@ -240,6 +237,46 @@ class op_hash256(op_sha256):
         x.update(self.st.digest())
         return Atom(x.digest())
 
+class op_rc(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if left.is_cons():
+            return Cons(left.val1.bumpref(), Cons(right.bumpref(), left.val2.bumpref()))
+        else:
+            return Cons(left.bumpref(), right.bumpref())
+
+    @classmethod
+    def finish(cls, state):
+        if state.is_cons():
+            return state.val2.bumpref()
+        else:
+            return state.bumpref()
+
+class op_h(FixOpcode):
+    min_args = max_args = 1
+
+    @classmethod
+    def operation(cls, lst):
+        if not lst.is_cons():
+            return Error("not a list")
+        return lst.val1.bumpref()
+
+class op_t(FixOpcode):
+    min_args = max_args = 1
+
+    @classmethod
+    def operation(cls, lst):
+        if not lst.is_cons():
+            return Error("not a list")
+        return lst.val2.bumpref()
+
+class op_l(FixOpcode):
+    min_args = max_args = 1
+
+    @classmethod
+    def operation(cls, lst):
+        return Atom(1 if lst.is_cons() else 0)
+
 '''
 class op_b(Operator):
     save = None
@@ -263,90 +300,6 @@ class op_softfork(Operator):
         el.deref()
     def finish(self):
         return Atom(1)
-
-class op_h(Operator):
-    def argument(self, el):
-        if self.state > 0:
-            raise Exception("h: too many arguments")
-        if el.is_atom():
-            raise Exception("h: received non-list argument %s" % (el,))
-        self.r = el.val1.bumpref()
-        assert el.val1._refs > 1
-        el.deref()
-        self.state += 1
-
-    def finish(self):
-        if self.state == 0:
-            raise Exception("h: must provide list argument")
-        self.state = -1
-        return self.r
-
-    def abandon(self):
-       assert self.state == -1
-       return [self.r] if self.state > 0 else []
-
-class op_t(Operator):
-    def argument(self, el):
-        if self.state > 0:
-            raise Exception("t: too many arguments")
-        if el.is_atom():
-            raise Exception("t: received non-list argument %s" % (el,))
-        self.r = el.val2.bumpref()
-        el.deref()
-        self.state += 1
-
-    def finish(self):
-        if self.state == 0:
-            raise Exception("t: must provide list argument")
-        self.state = -1
-        return self.r
-
-    def abandon(self):
-       return [self.r] if self.state > 0 else []
-
-class op_l(Operator):
-    def argument(self, el):
-        if self.state > 0:
-            raise Exception("l: too many arguments")
-        self.r = el.is_cons()
-        el.deref()
-        self.state += 1
-
-    def finish(self):
-        if self.state == 0:
-            raise Exception("l: must provide list argument")
-        return Atom(self.r)
-
-class op_c(Operator):
-    # (c head tail), (c h1 h2 h3 tail)
-    # this may mean you often want to have "nil" as the last arg,
-    # if you're constructing a list from scratch
-
-    def resolve(self, el):
-        assert el.kind == FUNC and el.val2 is self
-        r = check_complete(el.val1, xATCO(xANY(), xATCO(xANY(), xANY())), "c")
-        if r.want is not None:
-            return r.want
-        if r.err is not None:
-            assert False # el.replace(REF, r.err)
-            return None
-
-        improper_list = False
-        if r.el.is_atom():
-            improper_list = not r.el.is_nil()
-        elif r.right.el.is_atom():
-            improper_list = not r.right.el.is_nil()
-
-        if improper_list:
-            self.set_error_improper_list(el)
-        elif r.el.is_atom():
-            assert False # el.replace(REF, Atom(0))
-        elif r.right.el.is_atom():
-            assert False # el.replace(REF, r.left.el.bumpref())
-        else:
-            el.replace(CONS, r.left.el.bumpref(), Func(r.right.el.bumpref(), op_c()))
-        ALLOCATOR.record_work(30)
-        return None
 
 class op_nand(Operator):
     # aka are any false?
@@ -959,10 +912,10 @@ FUNCS = [
      ## to "99" softfork rules, or should it be more like (a '(+ 3 4))
      ## where you're expected to quote it first?
 
-#  (0x05, "c", op_c), # construct a list, last element is a list
-#  (0x06, "h", op_h), # head / car
-#  (0x07, "t", op_t), # tail / cdr
-#  (0x08, "l", op_l), # is cons?
+  (0x05, "rc", op_rc), # construct a list in reverse
+  (0x06, "h", op_h), # head / car
+  (0x07, "t", op_t), # tail / cdr
+  (0x08, "l", op_l), # is cons?
 #  (0x39, "b", op_b), # convert list to binary tree
 
 #  (0x09, "not", op_nand),

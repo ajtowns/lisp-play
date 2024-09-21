@@ -541,8 +541,12 @@ class SExpr:
                     parstack[-1].append(Symbol(a))
                 elif a == b'' or a == 0:
                     parstack[-1].append(Atom(0))
-                else:
+                elif isinstance(a, str):
                     parstack[-1].append(Atom(a.encode('utf8')))
+                elif isinstance(a, (int, bytes)):
+                    parstack[-1].append(Atom(a))
+                else:
+                    raise Exception(f"unknown constant type {a}")
             else:
                 raise Exception("BUG: unhandled match")
 
