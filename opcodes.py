@@ -131,8 +131,8 @@ class FixOpcode(Opcode):
     @staticmethod
     def state_info(state):
         if state.is_nil(): return 0, state
-        assert state.is_cons() and state.val1.is_atom()
-        return state.val1.as_int(), state.val2
+        assert state.is_cons() and state.val2.is_atom()
+        return state.val2.as_int(), state.val1
 
     @final
     @classmethod
@@ -140,7 +140,7 @@ class FixOpcode(Opcode):
         n, rest = cls.state_info(state)
         if n >= cls.max_args:
             return Error("too many arguments")
-        return Func(Cons(Atom(n+1), Cons(arg, rest.bumpref())), cls)
+        return Func(Cons(Cons(arg, rest.bumpref()), Atom(n+1)), cls)
 
     @final
     @classmethod

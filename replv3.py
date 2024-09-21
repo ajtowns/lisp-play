@@ -177,23 +177,8 @@ class WorkItem:
             self.value = Error("improper list in functional expression")
             return
 
-        fin = cont.fn.apply_finish()
-        cont.fn = None # dereffed by apply_finish
-
-        if isinstance(fin, Element):
-            self.value = fin
-            self.is_result = True
-        else:
-            # XXX handling of "a"; probably don't want to do it this way
-            env, fin = fin
-            if env is None:
-                self.value = fin
-                self.is_result = False
-            else:
-                self.value = Error("cannot specify environment with a in symbolic mode")
-                fin.deref()
-                self.is_result = True
-
+        self.value, cont.fn = cont.fn, None
+        self.is_result = False
         self.popcont()
 
     def finished(self):
@@ -208,11 +193,28 @@ class WorkItem:
     def step(self):
         if isinstance(self.value, Element):
             assert self.value.refcnt > 0
-        # rewriting
-        # (eval x) -> *x
-        # (q x y z) --> (x y z) done
-        # (if a b c) --> (eval (i a (q . b) (q . c)))
 
+        # trivial cases
+        if self.value.is_error():
+            if self.continuations:
+                self.popcont()
+                return
+            self.is_result = True
+
+        elif self.value.is_atom():
+            self.is_result = True
+
+        if self.is_result:
+            self.feedback()
+            return
+
+        # finish function
+        if self.value.is_func():
+            self.value = self.value.apply_finish()
+            self.is_result = True
+            return
+
+        # rewrite (q . foo)
         if self.value.is_symbol() and self.value.val1 == 'q' and self.continuations and self.continuations[-1].fn is None:
             cont = self.continuations[-1]
             self.value.deref()
@@ -223,18 +225,6 @@ class WorkItem:
             self.popcont()
             return
 
-        if self.value.is_error():
-            if self.continuations:
-                self.popcont()
-                return
-            self.is_result = True
-        elif self.value.is_atom() or self.value.is_func():
-            self.is_result = True
-
-        if self.is_result:
-            self.feedback()
-            return
-
         if self.value.is_cons():
             self.value, t = self.value.steal_children()
             self.continuations.append(Continuation(args=t, localsyms=self.localsyms().bumpref()))
@@ -243,6 +233,8 @@ class WorkItem:
             self.value = ResolveSymbol(self.localsyms(), self.globalsyms, sym)
             if self.value is None:
                 self.value = Error(f"Unknown symbol {sym}")
+            elif self.value.is_func():
+                self.is_result = True
             return
         else:
             raise Exception(f"unknwon element kind {self.value.kind}")
@@ -265,7 +257,7 @@ class BTCLispRepl(cmd.Cmd):
 
     def show_state(self):
         if self.wi is None: return
-        print(f" --- {self.wi.value}")
+        print(f" --- {'*' if self.wi.is_result else ''}{self.wi.value}")
         for c in reversed(self.wi.continuations):
             print(f"   -- {c.fn}    {c.args}")
 
