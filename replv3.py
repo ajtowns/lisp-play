@@ -16,19 +16,11 @@ from opcodes import SExpr_FUNCS, Op_FUNCS
 
 # To do:
 #
-#  * funcv2.py
-#  * have them have a better repr()
 #  * implement op_partial
-#
-#  * make def work at all
-#  * separate symbols into  pre-defined, global, local
 #  * make function calls work
 #
 #  * make bll evaluation work
 #  * make compilation work
-#  * make symbolic evaluation work when invoked with compiled code
-#    (does the first argument to a contain symbols? symbolic, no env. else,
-#     bll, potentially with env)
 #
 #  * add tx/utxo commands
 #
