@@ -126,9 +126,37 @@ class Continuation:
         return f"Continuation({self.fn}, {self.args})"
 
     def deref(self):
-        # XXX should deref symtable too
-        if isinstance(self.fn, Element): self.fn.deref()
-        if isinstance(self.args, Element): self.args.deref()
+        if isinstance(self.localsyms, SymbolTable):
+            self.localsyms.deref()
+        if isinstance(self.args, Element):
+            self.args.deref()
+        if isinstance(self.fn, Element):
+            self.fn.deref()
+
+    def feedback(self, value):
+        if self.fn is None:
+            self.fn = value.bumpref()
+        else:
+            # Opcode application
+            a = self.fn.val2.argument(self.fn.val1, value)
+            self.fn.deref()
+            self.fn = a
+
+        assert self.fn is not None
+
+        if self.fn.is_error():
+            err, self.fn = self.fn, None
+            return err
+
+        if self.args.is_cons():
+            res, self.args = self.args.steal_children()
+            return res
+
+        if self.args.is_nil():
+            res, self.fn = self.fn, None
+            return res
+        else:
+            return Error("improper list in functional expression")
 
 @dataclass
 class WorkItem:
@@ -141,37 +169,6 @@ class WorkItem:
     def popcont(self):
         last = self.continuations.pop()
         last.deref()
-
-    def feedback(self):
-        if not self.continuations:
-            return
-
-        cont = self.continuations[-1]
-        if cont.fn is None:
-            cont.fn = self.value
-        else:
-            cont.fn = cont.fn.apply_argument(self.value)
-        self.value = None
-
-        assert cont.fn is not None
-
-        if cont.fn.is_error():
-            self.value = cont.fn
-            cont.fn = None
-            return
-
-        if cont.args.is_cons():
-            self.value, cont.args = cont.args.steal_children()
-            self.is_result = False
-            return
-
-        if not cont.args.is_nil():
-            self.value = Error("improper list in functional expression")
-            return
-
-        self.value, cont.fn = cont.fn, None
-        self.is_result = False
-        self.popcont()
 
     def finished(self):
         return (self.is_result and not self.continuations)
@@ -197,7 +194,13 @@ class WorkItem:
             self.is_result = True
 
         if self.is_result:
-            self.feedback()
+            if self.continuations:
+                v = self.continuations[-1].feedback(self.value)
+                self.value.deref()
+                self.value = v
+                self.is_result = False
+                if self.continuations[-1].fn is None:
+                    self.popcont()
             return
 
         # finish function
@@ -213,7 +216,6 @@ class WorkItem:
             self.value = cont.args
             self.is_result = True
             cont.args = None
-            cont.localsyms.deref()
             self.popcont()
             return
 
@@ -232,7 +234,7 @@ class WorkItem:
             raise Exception(f"unknwon element kind {self.value.kind}")
 
 def symbolic_eval(sexpr, globalsyms):
-    wi = WorkItem(value=sexpr.bumpref(), globalsyms=globalsyms)
+    wi = WorkItem(value=sexpr, globalsyms=globalsyms)
 
     while not wi.finished():
         wi.step()
@@ -272,7 +274,6 @@ class BTCLispRepl(cmd.Cmd):
         r = symbolic_eval(s, self.symbols)
         print(r)
         r.deref()
-        s.deref()
 
     @handle_exc
     def do_debug(self, arg):
@@ -287,15 +288,13 @@ class BTCLispRepl(cmd.Cmd):
     def do_step(self, arg):
         if self.wi is None:
             print("No expression being debugged")
-            return
-        elif self.wi.finished():
+        elif not self.wi.finished():
+            self.wi.step()
+            self.show_state()
+        else:
             print(f"Result: {self.wi.value}")
             self.wi.value.deref()
             self.wi = None
-            return
-
-        self.wi.step()
-        self.show_state()
 
     @handle_exc
     def do_cont(self, arg):

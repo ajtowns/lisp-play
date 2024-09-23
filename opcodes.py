@@ -111,7 +111,6 @@ class BinOpcode(Opcode):
     @classmethod
     def argument(cls, state, arg):
         r = cls.binop(state, arg)
-        arg.deref()
         return Func(r, cls)
 
     @staticmethod
@@ -155,7 +154,6 @@ class FixOpcode(Opcode):
 class op_x(Opcode):
     # XXX perhaps should actually combine the args and include a message
     def argument(self, state, arg):
-        arg.deref()
         return Error()
 
     def finish(state):

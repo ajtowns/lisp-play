@@ -121,7 +121,7 @@ class Element:
     @staticmethod
     def deref_add_to_stack(stk, els):
         for el in els:
-            assert el.refcnt > 0
+            assert el.refcnt > 0, f"{el} already freed"
             el.refcnt -= 1
             if el.refcnt <= 0:
                 stk.append(el)
