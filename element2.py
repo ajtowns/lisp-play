@@ -265,16 +265,6 @@ class Func(Pair):
     def child_elements(self):
         return [self.val1]
 
-    def apply_argument(self, arg):
-        a = self.val2.argument(self.val1, arg)
-        self.deref()
-        return a
-
-    def apply_finish(self):
-        f = self.val2.finish(self.val1)
-        self.deref()
-        return f
-
     def __str__(self):
         return "FN(%s,%s)" % (self.val2.opcode_name(), str(self.val1))
 

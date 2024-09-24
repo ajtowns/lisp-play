@@ -87,11 +87,6 @@ class Tree:
 class Opcode:
     @classmethod
     @final
-    def make_func(cls):
-        return Func(cls.initial_state(), cls())
-
-    @classmethod
-    @final
     def opcode_name(cls):
         return cls.__name__
 
@@ -137,7 +132,7 @@ class FixOpcode(Opcode):
         n, rest = cls.state_info(state)
         if n >= cls.max_args:
             return Error("too many arguments")
-        return Func(Cons(Cons(arg, rest.bumpref()), Atom(n+1)), cls)
+        return Func(Cons(Cons(arg.bumpref(), rest.bumpref()), Atom(n+1)), cls)
 
     @final
     @classmethod

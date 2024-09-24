@@ -9,7 +9,7 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Any, Self
 
-from element2 import Element, SExpr, Atom, Cons, Error, Symbol, Func
+from element2 import Element, SExpr, Atom, Cons, Error, Symbol, Func, ALLOCATOR
 from opcodes import SExpr_FUNCS, Op_FUNCS
 
 ##########
@@ -106,7 +106,7 @@ class SymbolTable:
 def ResolveSymbol(localsyms, globalsyms, symname):
     if symname in SExpr_FUNCS:
         op = Op_FUNCS[SExpr_FUNCS[symname]]
-        return op.make_func()
+        return Func(op.initial_state(), op())
 
     # locals override globals, but do not override builtins
     if symname in localsyms.syms: return localsyms.syms[symname].bumpref()
@@ -135,7 +135,10 @@ class Continuation:
 
     def feedback(self, value):
         if self.fn is None:
-            self.fn = value.bumpref()
+            if value.is_func():
+                self.fn = value.bumpref()
+            else:
+                return Error("non-function used as function")
         else:
             # Opcode application
             a = self.fn.val2.argument(self.fn.val1, value)
@@ -183,7 +186,7 @@ class WorkItem:
         if isinstance(self.value, Element):
             assert self.value.refcnt > 0
 
-        # trivial cases
+        # trivial cases, handle them immediately
         if self.value.is_error():
             if self.continuations:
                 self.popcont()
@@ -193,6 +196,7 @@ class WorkItem:
         elif self.value.is_atom():
             self.is_result = True
 
+        # have a result, feed it back
         if self.is_result:
             if self.continuations:
                 v = self.continuations[-1].feedback(self.value)
@@ -205,30 +209,34 @@ class WorkItem:
 
         # finish function
         if self.value.is_func():
-            self.value = self.value.apply_finish()
-            self.is_result = True
-            return
-
-        # rewrite (q . foo)
-        if self.value.is_symbol() and self.value.val2 == 'q' and self.continuations and self.continuations[-1].fn is None:
-            cont = self.continuations[-1]
+            f = self.value.val2.finish(self.value.val1)
             self.value.deref()
-            self.value = cont.args
+            self.value = f
             self.is_result = True
-            cont.args = None
-            self.popcont()
             return
-
-        if self.value.is_cons():
+        elif self.value.is_cons():
             self.value, t = self.value.steal_children()
             self.continuations.append(Continuation(args=t, localsyms=self.localsyms().bumpref()))
+            return
         elif self.value.is_symbol():
+            # rewrite (q . foo)
+            v = self.value
             sym = self.value.val2
+            if sym == 'q' and self.continuations and self.continuations[-1].fn is None:
+                cont = self.continuations[-1]
+                self.value.deref()
+                self.value = cont.args
+                self.is_result = True
+                cont.args = None
+                self.popcont()
+                return
+
             self.value = ResolveSymbol(self.localsyms(), self.globalsyms, sym)
             if self.value is None:
                 self.value = Error(f"Unknown symbol {sym}")
             elif self.value.is_func():
                 self.is_result = True
+            v.deref()
             return
         else:
             raise Exception(f"unknwon element kind {self.value.kind}")
@@ -270,10 +278,16 @@ class BTCLispRepl(cmd.Cmd):
 
     @handle_exc
     def do_eval(self, arg):
+        before = ALLOCATOR.x
         s = SExpr.parse(arg)
         r = symbolic_eval(s, self.symbols)
         print(r)
         r.deref()
+        print(f"allocation: {before} -> {ALLOCATOR.x}")
+        if before < ALLOCATOR.x:
+            print("allocated:")
+            for x in ALLOCATOR.allocated:
+                print(f"    {x.refcnt} {x}")
 
     @handle_exc
     def do_debug(self, arg):
