@@ -219,10 +219,10 @@ class WorkItem:
             self.continuations.append(Continuation(args=t, localsyms=self.localsyms().bumpref()))
             return
         elif self.value.is_symbol():
-            # rewrite (q . foo)
             v = self.value
-            sym = self.value.val2
+            sym = v.val2
             if sym == 'q' and self.continuations and self.continuations[-1].fn is None:
+                # rewrite (q . foo)
                 cont = self.continuations[-1]
                 self.value.deref()
                 self.value = cont.args
@@ -239,7 +239,7 @@ class WorkItem:
             v.deref()
             return
         else:
-            raise Exception(f"unknwon element kind {self.value.kind}")
+            raise Exception(f"unknown element kind {self.value.kind}")
 
 def symbolic_eval(sexpr, globalsyms):
     wi = WorkItem(value=sexpr, globalsyms=globalsyms)
