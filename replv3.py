@@ -16,13 +16,17 @@ from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 # To do:
 #
+#  * think more clearly about when symbols are sexpressions (fn_eval/fn_userfunc) 
+#    vs literals?
+#
 #  * make bll evaluation work
 #  * make compilation work
 #
 #  * all the opcodes
 #  * implement op_partial
 #  * default values for fn arguments
-#  * defconst for compile-time constants
+#  * defconst for compile-time constants (with quote support)
+#  * quasiquote support
 #
 #  * add tx/utxo commands
 #
@@ -171,8 +175,16 @@ class fn_fin(Functor):
         pcont.fn.feedback(workitem, v)
 
 class fn_quote(Functor):
-    # need to deal with symbols (resolve constants, otherwise error)
-    pass
+    def step(self, workitem):
+        assert workitem.continuations
+        cont = workitem.continuations[-1]
+        assert cont.fn is self
+        assert isinstance(cont.args, Element)
+        if cont.args.is_bll():
+            cont.fn = fn_fin()
+            return cont.fn.step(workitem)
+        else:
+            workitem.error("cannot quote non-bll expression")
 
 class fn_eval(Functor):
     def step(self, workitem):
