@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Any, Self
 
 from element2 import Element, SExpr, Atom, Cons, Error, Symbol, Func, ALLOCATOR
-from opcodes import SExpr_FUNCS, Op_FUNCS
+from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 ##########
 
@@ -106,75 +106,179 @@ class SymbolTable:
 def ResolveSymbol(localsyms, globalsyms, symname):
     if symname in SExpr_FUNCS:
         op = Op_FUNCS[SExpr_FUNCS[symname]]
-        return Func(op.initial_state(), op())
+        return fn_op(Func(op.initial_state(), op()))
 
     # locals override globals, but do not override builtins
     if symname in localsyms.syms: return localsyms.syms[symname].bumpref()
     if symname in globalsyms.syms: return globalsyms.syms[symname].bumpref()
 
+    # should be creating a functor for user functions here
+
     return None
 
 #### evaluation model = workitem with continuations
 
+class Functor:
+    def step(self, workitem): raise NotImplementedError
+    def feedback(self, workitem, value):
+        # defaults to a no-op, discarding the passed in value
+        value.deref()
+
+    def deref(self):
+        pass # deref any internal state
+
+    def __repr__(self):
+        return self.__class__.__name__
+
+class fn_fin(Functor):
+    def step(self, workitem):
+        assert workitem.continuations
+        assert workitem.continuations[-1].fn is self
+        assert len(workitem.continuations) > 1
+        cont = workitem.continuations[-1]
+        if cont.args.is_error():
+            workitem.continuations.pop()
+            while workitem.continuations:
+                workitem.popcont()
+            workitem.continuations.append(cont)
+            return
+        v = cont.args.bumpref()
+        workitem.popcont()
+        pcont = workitem.continuations[-1]
+        pcont.fn.feedback(workitem, v)
+
+class fn_eval(Functor):
+    def step(self, workitem):
+        assert workitem.continuations
+        cont = workitem.continuations[-1]
+        assert cont.fn is self
+        assert isinstance(cont.args, Element)
+        if cont.args.is_atom() or cont.args.is_error():
+            cont.fn = fn_fin()
+            return cont.fn.step(workitem)
+        elif cont.args.is_cons():
+            op, cont.args = cont.args.steal_children()
+            if op.is_symbol():
+                r = ResolveSymbol(cont.localsyms, workitem.globalsyms, op.val2)
+                op.deref()
+                if isinstance(r, Functor):
+                     cont.fn = r
+                     return
+                else:
+                     r.deref()
+            op.deref()
+            workitem.error("expression does not have a function/operator")
+        elif cont.args.is_func():
+            # not sure?
+            workitem.error("BUG? expression with raw function??")
+        elif cont.args.is_symbol():
+            r = ResolveSymbol(cont.localsyms, workitem.globalsyms, cont.args)
+            if isinstance(r, Element):
+                cont.args.deref()
+                cont.args = r
+            elif isinstance(r, Functor):
+                workitem.error("symbol must be called")
+                r.deref()
+            else:
+                workitem.error("BUG? symbol isn't a functor or element")
+                r.deref()
+        else:
+            # internal error
+            workitem.error("BUG? not sure what to eval")
+
+class fn_op(Functor):
+    @staticmethod
+    def _get_type(obj):
+        return obj if isinstance(obj, type) else type(obj)
+
+    def __init__(self, opcode):
+        assert isinstance(opcode, Element) and opcode.is_func()
+        self.op_func = opcode
+
+    def deref(self):
+        self.op_func.deref()
+
+    def __repr__(self):
+        return f"{self.op_func}"
+
+    def step(self, workitem):
+        assert workitem.continuations
+        assert workitem.continuations[-1].fn is self
+        cont = workitem.continuations[-1]
+        if cont.args.is_nil():
+            f = self.op_func.val2.finish(self.op_func.val1)
+            c = Continuation(fn_fin(), f, cont.localsyms)
+            workitem.popcont()
+            workitem.continuations.append(c)
+        elif cont.args.is_cons():
+            w, cont.args = cont.args.steal_children()
+            c = Continuation(fn_eval(), w, cont.localsyms)
+            workitem.continuations.append(c)
+        else:
+            c = Continuation(fn_fin(), Error("argument to opcode is improper list"))
+            workitem.popcont()
+            workitem.continuations.append(c)
+
+    def feedback(self, workitem, value):
+        assert workitem.continuations
+        assert workitem.continuations[-1].fn is self
+        assert isinstance(value, Element)
+        if value.is_error():
+            c = Continuation(fn_fin(), Error("argument to opcode is improper list"))
+            workitem.popcont()
+            workitem.continuations.append(c)
+            return
+
+        nof = self.op_func.val2.argument(self.op_func.val1, value)
+        assert isinstance(nof, Element) and nof.is_func()
+        assert issubclass(self._get_type(nof.val2), Opcode)
+        self.op_func.deref()
+        self.op_func = nof
+
 @dataclass
 class Continuation:
-    args: Element      # remaining arguments
+    fn: Functor
+    args: Element           # (remaining) arguments to fn
     localsyms: SymbolTable
-    fn: Optional[Element] = None
 
     def __repr__(self):
         return f"Continuation({self.fn}, {self.args})"
 
     def deref(self):
-        if isinstance(self.localsyms, SymbolTable):
-            self.localsyms.deref()
-        if isinstance(self.args, Element):
-            self.args.deref()
-        if isinstance(self.fn, Element):
-            self.fn.deref()
-
-    def feedback(self, value):
-        if self.fn is None:
-            if value.is_func():
-                self.fn = value.bumpref()
-            else:
-                return Error("non-function used as function")
-        else:
-            # Opcode application
-            a = self.fn.val2.argument(self.fn.val1, value)
-            self.fn.deref()
-            self.fn = a
-
-        assert self.fn is not None
-
-        if self.fn.is_error():
-            err, self.fn = self.fn, None
-            return err
-
-        if self.args.is_cons():
-            res, self.args = self.args.steal_children()
-            return res
-
-        if self.args.is_nil():
-            res, self.fn = self.fn, None
-            return res
-        else:
-            return Error("improper list in functional expression")
+        self.fn.deref()
+        self.args.deref()
+        self.localsyms.deref()
 
 @dataclass
 class WorkItem:
-    value: Element
     globalsyms: SymbolTable
-    continuations: List[Continuation] = field(default_factory=list)
-    is_result: bool = False
+    continuations: List[Continuation]
     dummylocalsyms: SymbolTable = field(default_factory=SymbolTable)
+
+    @classmethod
+    def begin(cls, sexpr, syms):
+        wi = WorkItem(globalsyms=syms, continuations=[])
+        c = Continuation(fn=fn_eval(), args=sexpr, localsyms=wi.dummylocalsyms.bumpref())
+        wi.continuations.append(c)
+        return wi
+
+    def error(self, msg):
+        c = Continuation(fn_fin(), Error(msg))
+        workitem.popcont()
+        workitem.continuations.append(c)
 
     def popcont(self):
         last = self.continuations.pop()
         last.deref()
 
     def finished(self):
-        return (self.is_result and not self.continuations)
+        return isinstance(self.continuations[0].fn, fn_fin)
+
+    def get_result(self):
+        assert self.finished()
+        r = self.continuations[0].args.bumpref()
+        self.popcont()
+        return r
 
     def localsyms(self):
         if self.continuations:
@@ -183,71 +287,15 @@ class WorkItem:
             return self.dummylocalsyms
 
     def step(self):
-        if isinstance(self.value, Element):
-            assert self.value.refcnt > 0
-
-        # trivial cases, handle them immediately
-        if self.value.is_error():
-            if self.continuations:
-                self.popcont()
-                return
-            self.is_result = True
-
-        elif self.value.is_atom():
-            self.is_result = True
-
-        # have a result, feed it back
-        if self.is_result:
-            if self.continuations:
-                v = self.continuations[-1].feedback(self.value)
-                self.value.deref()
-                self.value = v
-                self.is_result = False
-                if self.continuations[-1].fn is None:
-                    self.popcont()
-            return
-
-        # finish function
-        if self.value.is_func():
-            f = self.value.val2.finish(self.value.val1)
-            self.value.deref()
-            self.value = f
-            self.is_result = True
-            return
-        elif self.value.is_cons():
-            self.value, t = self.value.steal_children()
-            self.continuations.append(Continuation(args=t, localsyms=self.localsyms().bumpref()))
-            return
-        elif self.value.is_symbol():
-            v = self.value
-            sym = v.val2
-            if sym == 'q' and self.continuations and self.continuations[-1].fn is None:
-                # rewrite (q . foo)
-                cont = self.continuations[-1]
-                self.value.deref()
-                self.value = cont.args
-                self.is_result = True
-                cont.args = None
-                self.popcont()
-                return
-
-            self.value = ResolveSymbol(self.localsyms(), self.globalsyms, sym)
-            if self.value is None:
-                self.value = Error(f"Unknown symbol {sym}")
-            elif self.value.is_func():
-                self.is_result = True
-            v.deref()
-            return
-        else:
-            raise Exception(f"unknown element kind {self.value.kind}")
+        cont = self.continuations[-1].fn.step(self)
 
 def symbolic_eval(sexpr, globalsyms):
-    wi = WorkItem(value=sexpr, globalsyms=globalsyms)
+    wi = WorkItem.begin(sexpr, globalsyms)
 
     while not wi.finished():
         wi.step()
 
-    return wi.value
+    return wi.get_result()
 
 class BTCLispRepl(cmd.Cmd):
     def __init__(self, prompt=None):
@@ -259,7 +307,6 @@ class BTCLispRepl(cmd.Cmd):
 
     def show_state(self):
         if self.wi is None: return
-        print(f" --- {'*' if self.wi.is_result else ''}{self.wi.value}")
         for c in reversed(self.wi.continuations):
             print(f"   -- {c.fn}    {c.args}")
 
@@ -295,7 +342,7 @@ class BTCLispRepl(cmd.Cmd):
             print("Already debugging an expression")
             return
         sexpr = SExpr.parse(arg)
-        self.wi = WorkItem(value=sexpr, globalsyms=self.symbols)
+        self.wi = WorkItem.begin(sexpr, self.symbols)
         self.show_state()
 
     @handle_exc
@@ -306,8 +353,9 @@ class BTCLispRepl(cmd.Cmd):
             self.wi.step()
             self.show_state()
         else:
-            print(f"Result: {self.wi.value}")
-            self.wi.value.deref()
+            r = self.wi.get_result()
+            print(f"Result: {r}")
+            r.deref()
             self.wi = None
 
     @handle_exc
