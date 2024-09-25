@@ -104,6 +104,8 @@ class SymbolTable:
             self.syms = None
 
 def ResolveSymbol(localsyms, globalsyms, symname):
+    assert isinstance(symname, str)
+
     if symname in SExpr_FUNCS:
         op = Op_FUNCS[SExpr_FUNCS[symname]]
         return fn_op(Func(op.initial_state(), op()))
@@ -161,27 +163,33 @@ class fn_eval(Functor):
             if op.is_symbol():
                 r = ResolveSymbol(cont.localsyms, workitem.globalsyms, op.val2)
                 op.deref()
+                if r is None:
+                    workitem.error("undefined symbol")
+                    return
                 if isinstance(r, Functor):
                      cont.fn = r
                      return
                 else:
                      r.deref()
+                     return
             op.deref()
             workitem.error("expression does not have a function/operator")
         elif cont.args.is_func():
             # not sure?
             workitem.error("BUG? expression with raw function??")
         elif cont.args.is_symbol():
-            r = ResolveSymbol(cont.localsyms, workitem.globalsyms, cont.args)
-            if isinstance(r, Element):
+            r = ResolveSymbol(cont.localsyms, workitem.globalsyms, cont.args.val2)
+            if r is None:
+                workitem.error("undefined symbol")
+                return
+            elif isinstance(r, Element):
                 cont.args.deref()
                 cont.args = r
             elif isinstance(r, Functor):
                 workitem.error("symbol must be called")
                 r.deref()
             else:
-                workitem.error("BUG? symbol isn't a functor or element")
-                r.deref()
+                workitem.error(f"BUG? symbol {cont.args}={r} isn't a functor or element")
         else:
             # internal error
             workitem.error("BUG? not sure what to eval")
@@ -207,29 +215,26 @@ class fn_op(Functor):
         cont = workitem.continuations[-1]
         if cont.args.is_nil():
             f = self.op_func.val2.finish(self.op_func.val1)
-            c = Continuation(fn_fin(), f, cont.localsyms)
+            c = Continuation(fn=fn_fin(), args=f, localsyms=cont.localsyms.bumpref())
             workitem.popcont()
             workitem.continuations.append(c)
         elif cont.args.is_cons():
             w, cont.args = cont.args.steal_children()
-            c = Continuation(fn_eval(), w, cont.localsyms)
+            c = Continuation(fn=fn_eval(), args=w, localsyms=cont.localsyms.bumpref())
             workitem.continuations.append(c)
         else:
-            c = Continuation(fn_fin(), Error("argument to opcode is improper list"))
-            workitem.popcont()
-            workitem.continuations.append(c)
+            workitem.error("argument to opcode is improper list")
 
     def feedback(self, workitem, value):
         assert workitem.continuations
         assert workitem.continuations[-1].fn is self
         assert isinstance(value, Element)
         if value.is_error():
-            c = Continuation(fn_fin(), Error("argument to opcode is improper list"))
-            workitem.popcont()
-            workitem.continuations.append(c)
+            workitem.error("argument to opcode is improper list")
             return
 
         nof = self.op_func.val2.argument(self.op_func.val1, value)
+        value.deref()
         assert isinstance(nof, Element) and nof.is_func()
         assert issubclass(self._get_type(nof.val2), Opcode)
         self.op_func.deref()
@@ -263,9 +268,9 @@ class WorkItem:
         return wi
 
     def error(self, msg):
-        c = Continuation(fn_fin(), Error(msg))
-        workitem.popcont()
-        workitem.continuations.append(c)
+        c = Continuation(fn=fn_fin(), args=Error(msg), localsyms=self.dummylocalsyms.bumpref())
+        self.popcont()
+        self.continuations.append(c)
 
     def popcont(self):
         last = self.continuations.pop()
