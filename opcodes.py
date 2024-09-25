@@ -162,6 +162,29 @@ class op_add(BinOpcode):
         else:
             return Error()
 
+class op_sub(Opcode):
+    @staticmethod
+    def initial_state():
+        return Cons(Atom(0), Atom(0))
+
+    @classmethod
+    def argument(cls, state, arg):
+        if not arg.is_atom():
+            return Error()
+        if state.is_cons() and state.val1.is_nil():
+            return Func(Cons(Atom(1), arg.bumpref()), op_sub)
+        elif state.is_cons():
+            return Func(Atom(state.val2.as_int() - arg.as_int()), op_sub)
+        else:
+            return Func(Atom(state.as_int() - arg.as_int()), op_sub)
+
+    @classmethod
+    def finish(cls, state):
+        if state.is_cons():
+            return Atom(0 - state.val2.as_int())
+        else:
+            return state.bumpref()
+
 class op_mul(BinOpcode):
     @staticmethod
     def initial_state():
@@ -493,25 +516,6 @@ class op_xor_u64(Operator):
         el.deref()
 
     def finish(self):
-        return Atom(self.i)
-
-class op_sub_u64(Operator):
-    def __init__(self):
-        self.i = None
-
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("sub: arguments must be atoms")
-        n = el.atom_as_u64()
-        el.deref()
-        if self.i is None:
-            self.i = n
-        else:
-            self.i -= n
-            self.i %= 0x1_0000_0000_0000_0000 # turns negatives back to positive
-
-    def finish(self):
-        if self.i is None:
-            raise Exception("sub: missing arguments")
         return Atom(self.i)
 
 # op_mod / op_divmod
@@ -929,7 +933,7 @@ FUNCS = [
 #  (0x14, "^", op_xor_u64),
 
   (0x17, "+", op_add),
-#  (0x18, "-", op_sub_u64),
+  (0x18, "-", op_sub),
   (0x19, "*", op_mul),
   (0x1a, "%", op_mod),
 #  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))

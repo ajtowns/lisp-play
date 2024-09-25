@@ -16,11 +16,11 @@ from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 # To do:
 #
-#  * implement op_partial
-#  * make function calls work
-#
 #  * make bll evaluation work
 #  * make compilation work
+#
+#  * all the opcodes
+#  * implement op_partial
 #
 #  * add tx/utxo commands
 #
@@ -40,6 +40,9 @@ from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 #    def (foo a b c) (* (+ a b) (+ a c) 3)
 #    ; (foo 1 2 3)
+
+#    def (foo (a.3) (b.4) (c.5)) (* (+ a b) (+ a c) 3)
+#    ; (foo) = (foo 3 4 5)
 
 #    $foo = (* (+ 9 13) (+ 9 7) (nil . 3))    ## whatever values * and + are
 
@@ -81,6 +84,9 @@ class SymbolTable:
     def set(self, symname, value):
         # XXX: cope with parameters (and default values for parameters)
         assert isinstance(symname, str)
+        if not isinstance(value, Element):
+            assert isinstance(value, tuple) and len(value) == 2
+            assert all(isinstance(v, Element) for v in value)
 
         if symname in self.syms:
             self.syms[symname].deref()
@@ -99,22 +105,31 @@ class SymbolTable:
     def deref(self):
         self.refcnt -= 1
         if self.refcnt == 0:
-            for _, v in self.syms:
+            for _, v in self.syms.items():
                 v.deref()
             self.syms = None
 
 def ResolveSymbol(localsyms, globalsyms, symname):
     assert isinstance(symname, str)
 
+    if symname == "if":
+        return fn_if()
+
     if symname in SExpr_FUNCS:
         op = Op_FUNCS[SExpr_FUNCS[symname]]
         return fn_op(Func(op.initial_state(), op()))
 
     # locals override globals, but do not override builtins
-    if symname in localsyms.syms: return localsyms.syms[symname].bumpref()
-    if symname in globalsyms.syms: return globalsyms.syms[symname].bumpref()
+    r = localsyms.syms.get(symname, None)
+    if r is None:
+        r = globalsyms.syms.get(symname, None)
+    if r is None:
+        return None
 
-    # should be creating a functor for user functions here
+    if isinstance(r, Element):
+        return r.bumpref()
+    else:
+        return fn_userfunc(r[0].bumpref(), r[1].bumpref())
 
     return None
 
@@ -136,7 +151,8 @@ class fn_fin(Functor):
     def step(self, workitem):
         assert workitem.continuations
         assert workitem.continuations[-1].fn is self
-        assert len(workitem.continuations) > 1
+        if len(workitem.continuations) == 1:
+            return
         cont = workitem.continuations[-1]
         if cont.args.is_error():
             workitem.continuations.pop()
@@ -186,7 +202,7 @@ class fn_eval(Functor):
                 cont.args.deref()
                 cont.args = r
             elif isinstance(r, Functor):
-                workitem.error("symbol must be called")
+                workitem.error("opcode must be called")
                 r.deref()
             else:
                 workitem.error(f"BUG? symbol {cont.args}={r} isn't a functor or element")
@@ -203,11 +219,11 @@ class fn_op(Functor):
         assert isinstance(opcode, Element) and opcode.is_func()
         self.op_func = opcode
 
-    def deref(self):
-        self.op_func.deref()
-
     def __repr__(self):
         return f"{self.op_func}"
+
+    def deref(self):
+        self.op_func.deref()
 
     def step(self, workitem):
         assert workitem.continuations
@@ -239,6 +255,108 @@ class fn_op(Functor):
         assert issubclass(self._get_type(nof.val2), Opcode)
         self.op_func.deref()
         self.op_func = nof
+
+class fn_if(Functor):
+    def step(self, workitem):
+        assert workitem.continuations
+        cont = workitem.continuations[-1]
+        assert cont.fn is self
+
+        if not cont.args.is_cons():
+            workitem.error("if requires at least one argument")
+            return
+
+        cond, cont.args = cont.args.steal_children()
+        c = Continuation(fn=fn_eval(), args=cond, localsyms=cont.localsyms.bumpref())
+        workitem.continuations.append(c)
+
+    def feedback(self, workitem, value):
+        assert workitem.continuations
+        cont = workitem.continuations[-1]
+        assert cont.fn is self
+
+        if cont.args.is_cons():
+            iftrue, cont.args = cont.args.steal_children()
+        elif cont.args.is_nil():
+            iftrue = Atom(1)
+
+        if cont.args.is_cons():
+            iffalse, cont.args = cont.args.steal_children()
+        elif cont.args.is_nil():
+            iffalse = Atom(0)
+
+        if not cont.args.is_nil():
+            iftrue.deref()
+            iffalse.deref()
+            value.deref()
+            if cont.args.is_cons():
+                worktree.error("if must have at most three arguments")
+            else:
+                worktree.error("argument to if are improper list")
+            return
+
+        if value.is_nil():
+            iftrue.deref()
+            c = Continuation(fn=fn_eval(), args=iffalse, localsyms=cont.localsyms.bumpref())
+        else:
+            iffalse.deref()
+            c = Continuation(fn=fn_eval(), args=iftrue, localsyms=cont.localsyms.bumpref())
+        workitem.popcont()
+        workitem.continuations.append(c)
+        value.deref()
+
+class fn_userfunc(Functor):
+    def __init__(self, params, expr):
+        self.params = params
+        self.expr = expr
+        self.syms = SymbolTable()
+
+    def __repr__(self):
+        return f"{self.params}->{self.expr}"
+
+    def deref(self):
+        self.params.deref()
+        self.expr.deref()
+        self.syms.deref()
+
+    def step(self, workitem):
+        assert workitem.continuations[-1].fn is self
+        cont = workitem.continuations[-1]
+        if cont.args.is_nil():
+            if self.params.is_nil():
+                # done!
+                c = Continuation(fn=fn_eval(), args=self.expr.bumpref(), localsyms=self.syms.bumpref())
+                workitem.popcont()
+                workitem.continuations.append(c)
+                return
+            #elif self.params.is_cons() and self.params.val1.is_cons():
+            #   XXX fill in default arguments
+            else:
+                workitem.error("insufficient arguments for user defined function")
+                return
+        elif cont.args.is_cons():
+            if self.params.is_nil():
+                workitem.error("too many arguments for user defined functions")
+                return
+            elif self.params.is_cons() and self.params.val1.is_symbol():
+                param, cont.args = cont.args.steal_children()
+                c = Continuation(fn=fn_eval(), args=param, localsyms=cont.localsyms.bumpref())
+                workitem.continuations.append(c)
+                return
+            else:
+                workitem.error("user defined function has non-symbol as param name?")
+                return
+        else:
+            workitem.error("call to user defined function is not proper list")
+            return
+
+    def feedback(self, workitem, value):
+        cont = workitem.continuations[-1]
+        assert cont.fn is self
+        assert self.params.is_cons() and self.params.val1.is_symbol()
+        param, self.params = self.params.steal_children()
+        self.syms.set(param.val2, value)
+        param.deref()
 
 @dataclass
 class Continuation:
@@ -313,7 +431,9 @@ class BTCLispRepl(cmd.Cmd):
     def show_state(self):
         if self.wi is None: return
         for c in reversed(self.wi.continuations):
-            print(f"   -- {c.fn}    {c.args}")
+            s = " ".join(f"{k}={v}" for k,v in c.localsyms.syms.items())
+            if s != "": s = f"    [{s}]"
+            print(f"   -- {c.fn}    {c.args}{s}")
 
     def default(self, line):
         if line.strip().startswith(";"):
@@ -388,7 +508,7 @@ class BTCLispRepl(cmd.Cmd):
         if sym.is_symbol():
             self.symbols.set(sym.val2, val.bumpref())
         elif sym.is_cons() and sym.val1.is_symbol():
-            self.symbols.set(sym.val1.val2, [sym.val2.bumpref(), val.bumpref()])
+            self.symbols.set(sym.val1.val2, (sym.val2.bumpref(), val.bumpref()))
         else:
             print("Expected symbol name (plus parameters) and definition")
         for e in s:
