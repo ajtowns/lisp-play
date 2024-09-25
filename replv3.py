@@ -220,6 +220,7 @@ class fn_eval(Functor):
                 workitem.error("undefined symbol")
                 return
             elif isinstance(r, Element):
+                cont.fn = fn_fin()
                 cont.args.deref()
                 cont.args = r
             elif isinstance(r, Functor):
@@ -551,7 +552,7 @@ class BTCLispRepl(cmd.Cmd):
             return
         sym, val = s
         if sym.is_symbol():
-            self.symbols.set(sym.val2, val.bumpref())
+            self.symbols.set(sym.val2, (Atom(0), val.bumpref()))
         elif sym.is_cons() and sym.val1.is_symbol():
             self.symbols.set(sym.val1.val2, (sym.val2.bumpref(), val.bumpref()))
         else:
