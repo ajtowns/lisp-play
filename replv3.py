@@ -95,7 +95,10 @@ class SymbolTable:
             assert all(isinstance(v, Element) for v in value)
 
         if symname in self.syms:
-            self.syms[symname].deref()
+            if isinstance(self.syms[symname], tuple):
+                map(e.deref(), self.syms[symname])
+            else:
+                self.syms[symname].deref()
         self.syms[symname] = value
 
     def unset(self, symname):
