@@ -21,6 +21,8 @@ from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 #
 #  * all the opcodes
 #  * implement op_partial
+#  * default values for fn arguments
+#  * defconst for compile-time constants
 #
 #  * add tx/utxo commands
 #
@@ -115,6 +117,9 @@ def ResolveSymbol(localsyms, globalsyms, symname):
     if symname == "if":
         return fn_if()
 
+    if symname == "q":
+        return fn_quote()
+
     if symname in SExpr_FUNCS:
         op = Op_FUNCS[SExpr_FUNCS[symname]]
         return fn_op(Func(op.initial_state(), op()))
@@ -164,6 +169,10 @@ class fn_fin(Functor):
         workitem.popcont()
         pcont = workitem.continuations[-1]
         pcont.fn.feedback(workitem, v)
+
+class fn_quote(Functor):
+    # need to deal with symbols (resolve constants, otherwise error)
+    pass
 
 class fn_eval(Functor):
     def step(self, workitem):
@@ -245,9 +254,15 @@ class fn_op(Functor):
         assert workitem.continuations
         assert workitem.continuations[-1].fn is self
         assert isinstance(value, Element)
+
         if value.is_error():
-            workitem.error("argument to opcode is improper list")
+            cont = workitem.continuations[-1]
+            cont.args.deref()
+            cont.fn = fn_fin()
+            cont.args = value
             return
+        if not value.is_bll():
+            workitem.error("cannot pass non-bll value to opcode")
 
         nof = self.op_func.val2.argument(self.op_func.val1, value)
         value.deref()

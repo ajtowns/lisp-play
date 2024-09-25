@@ -60,12 +60,12 @@ class Allocator:
 ALLOCATOR = Allocator()
 
 # kinds
-ATOM=255
-CONS=254
-ERROR=253
-FUNC=252
-
-SYMBOL=251
+ATOM=255     # always bll
+BLLCONS=254  # always bll, children are BLLCONS or ATOM
+SYMCONS=253  # not bll, due to one or other child not being bll
+ERROR=252    # not bll
+FUNC=251     # not bll
+SYMBOL=250   # not bll
 
 def int_to_bytes(i):
     if i == 0:
@@ -113,11 +113,6 @@ class Element:
     def child_elements(self):
         raise NotImplementedError
 
-    def is_bll(self):
-        if self.kind == CONS:
-            return self.val1.is_bll() and self.val2.is_bll()
-        return (self.kind == ATOM)
-
     @staticmethod
     def deref_add_to_stack(stk, els):
         for el in els:
@@ -146,12 +141,15 @@ class Element:
     def __repr__(self): return f"El<{self}>"
     def __str__(self): raise Exception(f"unimplemented {self.__class__}.__str__()")
 
+    def is_bll(self):
+        return self.kind == ATOM or self.kind == BLLCONS
+
     def is_atom(self):
         return self.kind == ATOM
     def is_nil(self):
         return self.kind == ATOM and self.val1 == 0
     def is_cons(self):
-        return self.kind == CONS
+        return self.kind == BLLCONS or self.kind == SYMCONS
     def is_error(self):
         return self.kind == ERROR
     def is_func(self):
@@ -247,9 +245,15 @@ class Symbol(Store):
         return "<%s>" % (self.val2)
 
 class Cons(Pair):
-    kind = CONS
+    def __init__(self, left, right):
+        if left.is_bll() and right.is_bll():
+            self.kind = BLLCONS
+        else:
+            self.kind = SYMCONS
+        super().__init__(left, right)
 
     def __str__(self):
+        bll = self.is_bll()
         x = []
         while self.val2.is_cons():
             x.append(self.val1)
@@ -258,7 +262,10 @@ class Cons(Pair):
         if not self.val2.is_nil():
             x.append(".")
             x.append(self.val2)
-        return "(%s)" % " ".join(map(str, x))
+        if bll:
+            return "(%s)" % " ".join(map(str, x))
+        else:
+            return "[%s]" % " ".join(map(str, x))
 
 class Func(Pair):
     kind = FUNC
