@@ -484,6 +484,24 @@ class BTCLispRepl(cmd.Cmd):
             self.wi = None
 
     @handle_exc
+    def do_next(self, arg):
+        if self.wi is None:
+            print("No expression being debugged")
+
+        target = len(self.wi.continuations)
+        while not self.wi.finished():
+            self.wi.step()
+            if len(self.wi.continuations) <= target:
+                break
+        if not self.wi.finished():
+            self.show_state()
+        else:
+            r = self.wi.get_result()
+            print(f"Result: {r}")
+            r.deref()
+            self.wi = None
+
+    @handle_exc
     def do_cont(self, arg):
         if self.wi is None:
             print("No expression being debugged")
@@ -492,10 +510,10 @@ class BTCLispRepl(cmd.Cmd):
         while not self.wi.finished():
             self.wi.step()
 
-        print(f"Result: {self.wi.value}")
-        self.wi.value.deref()
+        r = self.wi.get_result()
+        print(f"Result: {r}")
+        r.deref()
         self.wi = None
-        return
 
     @handle_exc
     def do_def(self, arg):
