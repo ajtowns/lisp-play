@@ -16,9 +16,6 @@ from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 # To do:
 #
-#  * think more clearly about when symbols are sexpressions (fn_eval/fn_userfunc) 
-#    vs literals?
-#
 #  * make bll evaluation work
 #  * make compilation work
 #
