@@ -6,6 +6,11 @@ import os
 import sys
 import traceback
 
+try:
+    import readline
+except ImportError:
+    readline = NOne
+
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Any, Self
 
@@ -449,12 +454,28 @@ def symbolic_eval(sexpr, globalsyms):
     return wi.get_result()
 
 class BTCLispRepl(cmd.Cmd):
+    HISTPATH = "~/.replv3.history"
+    HISTSIZE = 2000
+
+    @classmethod
+    def histpath(cls):
+        return os.path.expanduser(cls.HISTPATH)
+
     def __init__(self, prompt=None):
         self.prompt = ">>> " if prompt is None else prompt
         self.symbols = SymbolTable()
         self.wi = None
 
         cmd.Cmd.__init__(self)
+
+    def preloop(self):
+        if readline and os.path.exists(self.histpath()):
+            readline.read_history_file(self.histpath())
+
+    def postloop(self):
+        if readline:
+            readline.set_history_length(self.HISTSIZE)
+            readline.write_history_file(self.histpath())
 
     def show_state(self):
         if self.wi is None: return
