@@ -62,9 +62,12 @@ ALLOCATOR = Allocator()
 # kinds
 ATOM=255     # always bll
 BLLCONS=254  # always bll, children are BLLCONS or ATOM
+
 SYMCONS=253  # not bll, due to one or other child not being bll
-ERROR=252    # not bll
-FUNC=251     # not bll
+
+ERROR=252    # not bll, but can be the result of a bll call
+FUNC=251     # not bll, can be the result/input of partial?
+
 SYMBOL=250   # not bll
 
 def int_to_bytes(i):

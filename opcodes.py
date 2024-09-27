@@ -895,42 +895,38 @@ class op_tx(Operator):
 FUNCS = [
 #  (b'', "q", None), # quoting indicator, special
 #  (0x01, "a", op_a),  # apply
+#  (0x02, "sf", op_softfork),
+#  (0x03, "partial", op_partial),  # partially apply the following function
+     # these are "magic" opcodes. "q" is magic because its args aren't evaluated and
+     # do not need to be a proper list; "a" and "sf" are magic because their result
+     # gets evaluated further; "partial" is magic, because it returns and accepts a
+     # non-representable function object, rather than bll-code
 
-#  (0x99, "partial", op_partial),  # partially apply the following function
-     ## can be continued by being used as an opcode, or be another op_partial
-     ## means i need to make argument()/finish() the standard way of doing
-     ## "everything" though?
-     ## XXX note that this implies the ability to deep-copy the state of
-     ## any functions that are partial'ed
-  (0x02, "x", op_x),  # exception
-  (0x03, "i", op_i),  # eager-evaluated if
-#  (0x04, "sf", op_softfork),
-     ## should this be magic as in (sf '99 (+ 3 4)) treats "+" according
-     ## to "99" softfork rules, or should it be more like (a '(+ 3 4))
-     ## where you're expected to quote it first?
+  (0x04, "x", op_x),  # exception
+  (0x05, "i", op_i),  # eager-evaluated if
 
-  (0x05, "rc", op_rc), # construct a list in reverse
-  (0x06, "h", op_h), # head / car
-  (0x07, "t", op_t), # tail / cdr
-  (0x08, "l", op_l), # is cons?
-#  (0x39, "b", op_b), # convert list to binary tree
+  (0x06, "rc", op_rc), # construct a list in reverse
+  (0x07, "h", op_h), # head / car
+  (0x08, "t", op_t), # tail / cdr
+  (0x09, "l", op_l), # is cons?
+#  (0x0a, "b", op_b), # convert list to binary tree
 
-#  (0x09, "not", op_nand),
-#  (0x0a, "all", op_and),
-#  (0x0b, "any", op_or),
+#  (0x0b, "not", op_nand),
+#  (0x0c, "all", op_and),
+#  (0x0d, "any", op_or),
 
-#  (0x0c, "=", op_eq),
-#  (0x0d, "<s", op_lt_str),
-#  (0x0e, "strlen", op_strlen),
-#  (0x0f, "substr", op_substr),
-#  (0x10, "cat", op_cat),
+#  (0x0e, "=", op_eq),
+#  (0x0f, "<s", op_lt_str),
+#  (0x10, "strlen", op_strlen),
+#  (0x11, "substr", op_substr),
+#  (0x12, "cat", op_cat),
 
   # not really convinced these make sense as u64 (vs generic bitwise ops)
   # (eg, (~ 0x80) becomes 0x7FFF_FFFF_FFFF_FFFF which is weird)
-#  (0x11, "~", op_nand_u64),
-#  (0x12, "&", op_and_u64),
-#  (0x13, "|", op_or_u64),
-#  (0x14, "^", op_xor_u64),
+#  (0x13, "~", op_nand_u64),
+#  (0x14, "&", op_and_u64),
+#  (0x15, "|", op_or_u64),
+#  (0x16, "^", op_xor_u64),
 
   (0x17, "+", op_add),
   (0x18, "-", op_sub),
@@ -945,22 +941,19 @@ FUNCS = [
       ## allow this to apply to arbitrary atoms?
       ## (log of a 500kB atoms will fit into a u64)
 
-#  (0x22, "rd", op_list_read), # read bytes to Element
-#  (0x23, "wr", op_list_write), # write Element as bytes
+#  (0x20, "rd", op_list_read), # read bytes to Element
+#  (0x21, "wr", op_list_write), # write Element as bytes
 
-  (0x24, "sha256", op_sha256),
-  (0x25, "ripemd160", op_ripemd160),
-  (0x26, "hash160", op_hash160),
-  (0x27, "hash256", op_hash256),
-#  (0x28, "bip340_verify", op_bip340_verify),
-#  (0x29, "ecdsa_verify", op_ecdsa_verify),
-#  (0x2a, "secp256k1_muladd", op_secp256k1_muladd),
+  (0x22, "sha256", op_sha256),
+  (0x23, "ripemd160", op_ripemd160),
+  (0x24, "hash160", op_hash160),
+  (0x25, "hash256", op_hash256),
+#  (0x26, "bip340_verify", op_bip340_verify),
+#  (0x27, "ecdsa_verify", op_ecdsa_verify),
+#  (0x28, "secp256k1_muladd", op_secp256k1_muladd),
 
-#  (0x2b, "tx", op_tx),
-#  (0x2c, "bip342_txmsg", op_bip342_txmsg),
-#  (0x2d, "bip345_accrue", op_bip345_accrue),
-      ## for simulating op_vault, add the ability to assert that
-      ## funds from this input have been distributed to a given output
+#  (0x29, "tx", op_tx),
+#  (0x2a, "bip342_txmsg", op_bip342_txmsg),
 ]
 
 
