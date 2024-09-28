@@ -293,6 +293,39 @@ class op_l(FixOpcode):
     def operation(cls, lst):
         return Atom(1 if lst.is_cons() else 0)
 
+class op_nand(BinOpcode):
+    # aka is any false?
+    @classmethod
+    def binop(cls, left, right):
+        if right.is_nil():
+            return Atom(1)
+        else:
+            return left.bumpref()
+
+class op_and(BinOpcode):
+    # aka are all true?
+
+    @staticmethod
+    def initial_state():
+        return Atom(1)
+
+    @classmethod
+    def binop(cls, left, right):
+        if right.is_nil():
+            return Atom(0)
+        else:
+            return left.bumpref()
+
+class op_or(BinOpcode):
+    # aka are any true?
+
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_nil():
+            return Atom(1)
+        else:
+            return left.bumpref()
+
 '''
 class op_b(Operator):
     save = None
@@ -316,39 +349,6 @@ class op_softfork(Operator):
         el.deref()
     def finish(self):
         return Atom(1)
-
-class op_nand(Operator):
-    # aka are any false?
-    def __init__(self):
-        self.b = False
-    def argument(self, el):
-        if el.is_nil():
-            self.b = True
-        el.deref()
-    def finish(self):
-        return Atom(self.b)
-
-class op_and(Operator):
-    # aka are all true?
-    def __init__(self):
-        self.b = True
-    def argument(self, el):
-        if el.is_nil():
-            self.b = False
-        el.deref()
-    def finish(self):
-        return Atom(self.b)
-
-class op_or(Operator):
-    # aka are any true?
-    def __init__(self):
-        self.b = False
-    def argument(self, el):
-        if not el.is_nil():
-            self.b = True
-        el.deref()
-    def finish(self):
-        return Atom(self.b)
 
 class op_eq(Operator):
     def __init__(self):
@@ -911,9 +911,9 @@ FUNCS = [
   (0x09, "l", op_l), # is cons?
 #  (0x0a, "b", op_b), # convert list to binary tree
 
-#  (0x0b, "not", op_nand),
-#  (0x0c, "all", op_and),
-#  (0x0d, "any", op_or),
+  (0x0b, "not", op_nand),
+  (0x0c, "all", op_and),
+  (0x0d, "any", op_or),
 
 #  (0x0e, "=", op_eq),
 #  (0x0f, "<s", op_lt_str),

@@ -29,6 +29,7 @@ import symbll
 #  * default values for fn arguments
 #  * defconst for compile-time constants (with quote support)
 #  * quasiquote support
+#  * add a blleval opcode for symbll?
 #
 #  * add tx/utxo commands
 #
