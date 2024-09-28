@@ -133,7 +133,7 @@ class BTCLispRepl(cmd.Cmd):
     def do_compile(self, arg):
         before = ALLOCATOR.x
         s = SExpr.parse(arg)
-        r = symbll.compile_expr(s, self.symbols, symbll.SymbolTable())
+        r = symbll.compile_expr(s, symbll.SymbolIndexes(self.symbols, offset=2), symbll.SymbolIndexes([], offset=3))
         print(r)
         r.deref()
         s.deref()

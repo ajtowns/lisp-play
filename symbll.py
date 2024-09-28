@@ -392,8 +392,49 @@ def OpAtom(opcode):
     else:
         return Atom(SExpr_FUNCS[opcode])
 
+class SymbolIndexes:
+    def __init__(self, vals, offset=1):
+        if isinstance(vals, SymbolTable):
+            vals = vals.syms.keys()
+
+        x = []
+        for v in vals:
+            self.add(x, v)
+
+        m,a = 1,offset
+        while offset > 1:
+            m *= 2
+            offset //= 2
+        a -= m
+
+        self.indexes = {n: (v*m+a) for (n, v) in self.finish(x)}
+
+    def __getitem__(n):
+        return self.indexes.get(n, None)
+
+    @staticmethod
+    def add(sofar, symname):
+        sofar.append( (1, [(symname, 1)]) )
+
+        while len(sofar) > 1 and sofar[-1][0] == sofar[-2][0]:
+            cntb, b = sofar.pop()
+            cnta, a = sofar.pop()
+            c = [(n, v*2) for n,v in a] + [(n, v*2+1) for n,v in b]
+            sofar.append( (cnta + cntb, c) )
+
+    @staticmethod
+    def finish(sofar):
+        if len(sofar) == 0: return []
+        res = sofar.pop()[1]
+        while sofar:
+            _, a = sofar.pop()
+            res = [(n, v*2) for n,v in a] + [(n, v*2+1) for n,v in res]
+        return res
+
 def compile_expr(sexpr, globalsyms, localsyms):
     assert isinstance(sexpr, Element)
+    assert isinstance(globalsyms, SymbolIndexes)
+    assert isinstance(localsyms, SymbolIndexes)
 
     assert not sexpr.is_func() and not sexpr.is_error()
 
