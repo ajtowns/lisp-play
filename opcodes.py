@@ -268,6 +268,38 @@ class op_rc(BinOpcode):
         else:
             return state.bumpref()
 
+class op_b(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if left.is_nil():
+            return Cons(Cons(right.bumpref(), Atom(0)), Atom(1))
+        else:
+            assert left.is_cons() and left.val1.is_cons() and left.val2.is_atom()
+            n = left.val2.as_int()
+            n_next = n + 1
+            v = right.bumpref()
+            m = left.val1
+            while n % 2 == 1:
+                assert m.is_cons()
+                n //= 2
+                v = Cons(m.val1.bumpref(), v)
+                m = m.val2
+            return Cons(Cons(v, m.bumpref()), Atom(n_next))
+
+    @classmethod
+    def finish(cls, state):
+        if state.is_nil():
+            return state.bumpref()
+        else:
+            assert state.is_cons() and state.val1.is_cons() and state.val2.is_atom()
+            l = state.val1.val1.bumpref()
+            rest = state.val1.val2
+            while rest.is_cons():
+                l = Cons(rest.val1.bumpref(), l)
+                rest = rest.val2
+            assert rest.is_nil()
+            return l
+
 class op_h(FixOpcode):
     min_args = max_args = 1
 
@@ -327,23 +359,6 @@ class op_or(BinOpcode):
             return left.bumpref()
 
 '''
-class op_b(Operator):
-    save = None
-    def argument(self, el):
-        if self.save is not None:
-            # (would be cool to make a tree of trees)
-            raise Exception("b: only supports one argument")
-        self.save = el
-
-    def finish(self):
-        if self.save is None: return Atom(0)
-        tree_args = Cons(Atom(0), self.save)
-        self.save = None
-        return Func(tree_args, fn_tree())
-
-    def abandon(self):
-       return [self.save] if self.save is not None else []
-
 class op_softfork(Operator):
     def argument(self, el):
         el.deref()
@@ -909,7 +924,7 @@ FUNCS = [
   (0x07, "h", op_h), # head / car
   (0x08, "t", op_t), # tail / cdr
   (0x09, "l", op_l), # is cons?
-#  (0x0a, "b", op_b), # convert list to binary tree
+  (0x0a, "b", op_b), # convert list to binary tree
 
   (0x0b, "not", op_nand),
   (0x0c, "all", op_and),
