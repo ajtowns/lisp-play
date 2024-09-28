@@ -130,6 +130,19 @@ class BTCLispRepl(cmd.Cmd):
         return True
 
     @handle_exc
+    def do_compile(self, arg):
+        before = ALLOCATOR.x
+        s = SExpr.parse(arg)
+        r = symbll.compile_expr(s, self.symbols, symbll.SymbolTable())
+        print(r)
+        r.deref()
+        s.deref()
+        if before < ALLOCATOR.x:
+            print("allocated:")
+            for x in ALLOCATOR.allocated:
+                print(f"    {x.refcnt} {x}")
+
+    @handle_exc
     def do_eval(self, arg):
         before = ALLOCATOR.x
         s = SExpr.parse(arg)

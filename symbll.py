@@ -3,9 +3,9 @@
 import functools
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, List, Any, Self
+from typing import List
 
-from element2 import Element, SExpr, Atom, Cons, Error, Symbol, Func, ALLOCATOR
+from element2 import Element, SExpr, Atom, Cons, Error, Func
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 ####
@@ -379,3 +379,66 @@ def symbolic_eval(sexpr, globalsyms):
 
     return wi.get_result()
 
+SpecialBLLOps = {
+    'q': 0,
+    'a': 1,
+    'sf': 2,
+    'partial': 3,
+}
+
+def OpAtom(opcode):
+    if opcode in SpecialBLLOps:
+        return Atom(SpecialBLLOps[opcode])
+    else:
+        return Atom(SExpr_FUNCS[opcode])
+
+def compile_expr(sexpr, globalsyms, localsyms):
+    assert isinstance(sexpr, Element)
+
+    assert not sexpr.is_func() and not sexpr.is_error()
+
+    if sexpr.is_nil():
+        return sexpr.bumpref()
+    elif sexpr.is_atom():
+        return Cons(Atom(0), sexpr.bumpref())
+    elif sexpr.is_symbol():
+        raise NotImplementedError
+    else:
+        assert sexpr.is_cons()
+        assert sexpr.val1.is_symbol()
+        symname = sexpr.val1.val2
+        if symname == 'q':
+            assert sexpr.val2.is_bll()
+            return Cons(Atom(0), sexpr.val2.bumpref())
+        elif symname == 'if':
+            assert sexpr.val2.is_cons()
+            cond_expr = compile_expr(sexpr.val2.val1, globalsyms, localsyms)
+            if not sexpr.val2.val2.is_cons():
+                assert sexpr.val2.val2.is_nil()
+                return SExpr.list_to_element([OpAtom("i"), cond_expr])
+            elif not sexpr.val2.val2.val2.is_cons():
+                assert sexpr.val2.val2.val2.is_nil()
+                then_expr = compile_expr(sexpr.val2.val2.val1, globalsyms, localsyms)
+                i_expr = SExpr.list_to_element([OpAtom("i"), cond_expr, then_expr])
+                return SExpr.list_to_element([OpAtom("a"), i_expr])
+            elif not sexpr.val2.val2.val2.val2.is_cons():
+                assert sexpr.val2.val2.val2.val2.is_nil()
+                then_expr = compile_expr(sexpr.val2.val2.val1, globalsyms, localsyms)
+                else_expr = compile_expr(sexpr.val2.val2.val2.val1, globalsyms, localsyms)
+                i_expr = SExpr.list_to_element([OpAtom("i"), cond_expr, then_expr, else_expr])
+                return SExpr.list_to_element([OpAtom("a"), i_expr])
+            else:
+                raise Exception("invalid if expression")
+        elif symname in SExpr_FUNCS:
+            l = [OpAtom(symname)]
+            args = sexpr.val2
+            while args.is_cons():
+                l.append(compile_expr(args.val1, globalsyms, localsyms))
+                args = args.val2
+            l = SExpr.list_to_element(l)
+            if not args.is_nil():
+                l.deref()
+                raise Exception("opcode call via improper list")
+            return l
+        else:
+            raise NotImplementedError
