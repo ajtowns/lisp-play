@@ -9,7 +9,7 @@ import verystable.core.messages
 import verystable.core.script
 import verystable.core.secp256k1
 
-from element2 import Element, Atom, Cons, Error, Func, SerDeser
+from element import Element, Atom, Cons, Error, Func, SerDeser
 
 def get_env(n, env):
     if n < 0:

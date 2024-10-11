@@ -6,7 +6,7 @@ import functools
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from element2 import Element, SExpr, Atom, Cons, Error, Func
+from element import Element, SExpr, Atom, Cons, Error, Func
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 ####
