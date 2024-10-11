@@ -1,22 +1,53 @@
 #!/usr/bin/env python3
 
+import abc
 import functools
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from element2 import Element, SExpr, Atom, Cons, Error, Func
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 ####
 
-class SymbolTable:
+@dataclass
+class SymbolInfo:
+    is_func: bool
+    position: Optional[int] = None
+    sexpr: Optional[Element] = None
+    params: Optional[List[str]] = None
+
+class SymbolContainer(abc.ABC):
+    @abc.abstractmethod
+    def __getitem__(self, n):
+        pass
+
+class SymbolTable(SymbolContainer):
+    """maps symbols (by name) to values"""
+
     def __init__(self):
         self.refcnt = 1
         self.syms = {}
 
+    @classmethod
+    def mkinfo(cls, symvalue):
+        if isinstance(symvalue, tuple):
+            return SymbolInfo(is_func=True, sexpr=symvalue[1], params=symvalue[0])
+        else:
+            return SymbolInfo(is_func=False, sexpr=symvalue)
+
+    def __iter__(self):
+        yield from self.syms.keys()
+
+    def __getitem__(self, symname):
+        if symname not in self.syms:
+            return None
+        return self.mkinfo(self.syms[symname])
+
     def set(self, symname, value):
-        # XXX: cope with parameters (and default values for parameters)
+        # XXX: cope with default values for parameters
+        assert self.refcnt == 1
         assert isinstance(symname, str)
         if not isinstance(value, Element):
             assert isinstance(value, tuple) and len(value) == 2
@@ -24,15 +55,21 @@ class SymbolTable:
 
         if symname in self.syms:
             if isinstance(self.syms[symname], tuple):
-                map(e.deref(), self.syms[symname])
+                for e in self.syms[symname]:
+                    e.deref()
             else:
                 self.syms[symname].deref()
         self.syms[symname] = value
 
     def unset(self, symname):
+        assert self.refcnt == 1
         assert isinstance(symname, str), f"{repr(symname)} not a str?"
         if symname in self.syms:
-            self.syms[symname].deref()
+            if isinstance(self.syms[symname], tuple):
+                for e in self.syms[symname]:
+                    e.deref()
+            else:
+                self.syms[symname].deref()
             del self.syms[symname]
 
     def bumpref(self):
@@ -45,6 +82,58 @@ class SymbolTable:
             for _, v in self.syms.items():
                 v.deref()
             self.syms = None
+
+class SymbolIndex(SymbolContainer):
+    """maps symbols (by name) to their position in a BLL environment"""
+
+    def __init__(self, vals, offset=1):
+        if isinstance(vals, SymbolTable):
+            vals = [(v, vals[v]) for v in vals]
+        else:
+            vals = [(v, SymbolInfo()) for v in vals]
+
+        x = []
+        for vsi in vals:
+            self.add(x, vsi)
+        x = self.finish(x)
+
+        m,a = 1,offset
+        while offset > 1:
+            m *= 2
+            offset //= 2
+        a -= m
+
+        self.ordering = [n for (n,si),pos in x]
+        self.indexes = {}
+        for (n,si),pos in x:
+            si.position = pos*m + a
+            self.indexes[n] = si
+        print("AAA", self.indexes)
+
+    def __iter__(self):
+        yield from self.ordering
+
+    def __getitem__(self, n):
+        return self.indexes.get(n, None)
+
+    @staticmethod
+    def add(sofar, symname):
+        sofar.append( (1, [(symname, 1)]) )
+
+        while len(sofar) > 1 and sofar[-1][0] == sofar[-2][0]:
+            cntb, b = sofar.pop()
+            cnta, a = sofar.pop()
+            c = [(n, v*2) for n,v in a] + [(n, v*2+1) for n,v in b]
+            sofar.append( (cnta + cntb, c) )
+
+    @staticmethod
+    def finish(sofar):
+        if len(sofar) == 0: return []
+        res = sofar.pop()[1]
+        while sofar:
+            _, a = sofar.pop()
+            res = [(n, v*2) for n,v in a] + [(n, v*2+1) for n,v in res]
+        return res
 
 def ResolveSymbol(localsyms, globalsyms, symname):
     assert isinstance(symname, str)
@@ -60,18 +149,16 @@ def ResolveSymbol(localsyms, globalsyms, symname):
         return fn_op(Func(op.initial_state(), op()))
 
     # locals override globals, but do not override builtins
-    r = localsyms.syms.get(symname, None)
+    r = localsyms[symname]
     if r is None:
-        r = globalsyms.syms.get(symname, None)
+        r = globalsyms[symname]
     if r is None:
         return None
 
-    if isinstance(r, Element):
-        return r.bumpref()
+    if r.is_func:
+        return fn_userfunc(r.params.bumpref(), r.sexpr.bumpref())
     else:
-        return fn_userfunc(r[0].bumpref(), r[1].bumpref())
-
-    return None
+        return r.sexpr.bumpref()
 
 #### evaluation model = workitem with continuations
 
@@ -133,15 +220,14 @@ class fn_eval(Functor):
                 op.deref()
                 if r is None:
                     workitem.error("undefined symbol")
-                    return
-                if isinstance(r, Functor):
+                elif isinstance(r, Functor):
                      cont.fn = r
-                     return
                 else:
+                     workitem.error("symbolic expression treated as function")
                      r.deref()
-                     return
-            op.deref()
-            workitem.error("expression does not have a function/operator")
+            else:
+                op.deref()
+                workitem.error("expression does not have a function/operator")
         elif cont.args.is_func():
             # not sure?
             workitem.error("BUG? expression with raw function??")
@@ -392,49 +478,30 @@ def OpAtom(opcode):
     else:
         return Atom(SExpr_FUNCS[opcode])
 
-class SymbolIndexes:
-    def __init__(self, vals, offset=1):
-        if isinstance(vals, SymbolTable):
-            vals = vals.syms.keys()
+def ResolveIndex(symname, globalidx, localidx):
+    s = localidx[symname]
+    if s is None:
+        s = globalidx[symname]
+    if s is None:
+        return s
+    assert isinstance(s, SymbolInfo) and s.position is not None
+    return s
 
-        x = []
-        for v in vals:
-            self.add(x, v)
+def compile_args(args, globalidx, localidx):
+    l = []
+    while args.is_cons():
+        l.append(compile_expr(args.val1, globalidx, localidx))
+        args = args.val2
+    l = SExpr.list_to_element(l)
+    if not args.is_nil():
+        l.deref()
+        raise Exception("call via improper list")
+    return l
 
-        m,a = 1,offset
-        while offset > 1:
-            m *= 2
-            offset //= 2
-        a -= m
-
-        self.indexes = {n: (v*m+a) for (n, v) in self.finish(x)}
-
-    def __getitem__(n):
-        return self.indexes.get(n, None)
-
-    @staticmethod
-    def add(sofar, symname):
-        sofar.append( (1, [(symname, 1)]) )
-
-        while len(sofar) > 1 and sofar[-1][0] == sofar[-2][0]:
-            cntb, b = sofar.pop()
-            cnta, a = sofar.pop()
-            c = [(n, v*2) for n,v in a] + [(n, v*2+1) for n,v in b]
-            sofar.append( (cnta + cntb, c) )
-
-    @staticmethod
-    def finish(sofar):
-        if len(sofar) == 0: return []
-        res = sofar.pop()[1]
-        while sofar:
-            _, a = sofar.pop()
-            res = [(n, v*2) for n,v in a] + [(n, v*2+1) for n,v in res]
-        return res
-
-def compile_expr(sexpr, globalsyms, localsyms):
+def compile_expr(sexpr, globalidx, localidx):
     assert isinstance(sexpr, Element)
-    assert isinstance(globalsyms, SymbolIndexes)
-    assert isinstance(localsyms, SymbolIndexes)
+    assert isinstance(globalidx, SymbolIndex)
+    assert isinstance(localidx, SymbolIndex)
 
     assert not sexpr.is_func() and not sexpr.is_error()
 
@@ -443,7 +510,10 @@ def compile_expr(sexpr, globalsyms, localsyms):
     elif sexpr.is_atom():
         return Cons(Atom(0), sexpr.bumpref())
     elif sexpr.is_symbol():
-        raise NotImplementedError
+        s = ResolveIndex(sexpr.val2, globalidx, localidx)
+        if s is None:
+            raise Exception("invalid symbol")
+        return Atom(s.position)
     else:
         assert sexpr.is_cons()
         assert sexpr.val1.is_symbol()
@@ -453,33 +523,68 @@ def compile_expr(sexpr, globalsyms, localsyms):
             return Cons(Atom(0), sexpr.val2.bumpref())
         elif symname == 'if':
             assert sexpr.val2.is_cons()
-            cond_expr = compile_expr(sexpr.val2.val1, globalsyms, localsyms)
+            cond_expr = compile_expr(sexpr.val2.val1, globalidx, localidx)
             if not sexpr.val2.val2.is_cons():
                 assert sexpr.val2.val2.is_nil()
                 return SExpr.list_to_element([OpAtom("i"), cond_expr])
             elif not sexpr.val2.val2.val2.is_cons():
                 assert sexpr.val2.val2.val2.is_nil()
-                then_expr = compile_expr(sexpr.val2.val2.val1, globalsyms, localsyms)
+                then_expr = compile_expr(sexpr.val2.val2.val1, globalidx, localidx)
                 i_expr = SExpr.list_to_element([OpAtom("i"), cond_expr, then_expr])
                 return SExpr.list_to_element([OpAtom("a"), i_expr])
             elif not sexpr.val2.val2.val2.val2.is_cons():
                 assert sexpr.val2.val2.val2.val2.is_nil()
-                then_expr = compile_expr(sexpr.val2.val2.val1, globalsyms, localsyms)
-                else_expr = compile_expr(sexpr.val2.val2.val2.val1, globalsyms, localsyms)
+                then_expr = compile_expr(sexpr.val2.val2.val1, globalidx, localidx)
+                else_expr = compile_expr(sexpr.val2.val2.val2.val1, globalidx, localidx)
                 i_expr = SExpr.list_to_element([OpAtom("i"), cond_expr, then_expr, else_expr])
                 return SExpr.list_to_element([OpAtom("a"), i_expr])
             else:
                 raise Exception("invalid if expression")
         elif symname in SExpr_FUNCS:
-            l = [OpAtom(symname)]
-            args = sexpr.val2
-            while args.is_cons():
-                l.append(compile_expr(args.val1, globalsyms, localsyms))
-                args = args.val2
-            l = SExpr.list_to_element(l)
-            if not args.is_nil():
-                l.deref()
-                raise Exception("opcode call via improper list")
-            return l
+            l = compile_args(sexpr.val2, globalidx, localidx)
+            return Cons(OpAtom(symname), l)
         else:
-            raise NotImplementedError
+            s = ResolveIndex(symname, globalidx, localidx)
+            if s is None:
+                raise Exception("invalid symbol")
+            b_l = Cons(OpAtom('b'), compile_args(sexpr.val2, globalidx, localidx))
+            a_l = [OpAtom('a'), Atom(s.position), b_l]
+            return SExpr.list_to_element(a_l)
+
+def compile_fn(symname, globs, globidx):
+    loc = SymbolTable()
+    if isinstance(globs.syms[symname], Element):
+        sexpr = globs.syms[symname]
+    else:
+        params = globs.syms[symname][0]
+        while params.is_cons():
+            if params.val1.is_symbol():
+                loc.set(params.val1.val2, Atom(0))
+            else:
+                raise Exception("function parameters aren't symbols")
+            params = params.val2
+        print("ZZZ", globs.syms[symname])
+        sexpr = globs.syms[symname][1]
+    x = compile_expr(sexpr, globidx, SymbolIndex(loc, offset=3))
+    loc.deref()
+    return x
+
+def compile_program(symname, globalsyms):
+    # (a (q N) (rc 1 (b GLOBALS)))
+
+    assert isinstance(symname, str)
+    assert isinstance(globalsyms, SymbolTable)
+    assert symname in globalsyms.syms
+
+    globidx = SymbolIndex(globalsyms, offset=2)
+    print("YYY", globalsyms.syms[symname], globidx[symname])
+    b_lst = [OpAtom('b')]
+    for globsym in globidx:
+        globex = compile_fn(globsym, globalsyms, globidx)
+        b_lst.append(Cons(OpAtom('q'), globex))
+
+    rc_lst = [OpAtom('rc'), Atom(1), SExpr.list_to_element(b_lst)]
+    fin_lst = [OpAtom('a'), Cons(OpAtom('q'), Atom(globidx[symname].position)),
+                SExpr.list_to_element(rc_lst)]
+
+    return SExpr.list_to_element(fin_lst)

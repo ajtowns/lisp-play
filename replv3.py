@@ -27,6 +27,7 @@ import symbll
 #  * all the opcodes
 #  * implement op_partial
 #  * default values for fn arguments
+#  * destructuring of fn arguments?
 #  * defconst for compile-time constants (with quote support)
 #  * quasiquote support
 #  * add a blleval opcode for symbll?
@@ -133,7 +134,7 @@ class BTCLispRepl(cmd.Cmd):
     def do_compile(self, arg):
         before = ALLOCATOR.x
         s = SExpr.parse(arg)
-        r = symbll.compile_expr(s, symbll.SymbolIndexes(self.symbols, offset=2), symbll.SymbolIndexes([], offset=3))
+        r = symbll.compile_expr(s, symbll.SymbolIndex(self.symbols, offset=2), symbll.SymbolIndex([], offset=3))
         print(r)
         r.deref()
         s.deref()
@@ -141,6 +142,16 @@ class BTCLispRepl(cmd.Cmd):
             print("allocated:")
             for x in ALLOCATOR.allocated:
                 print(f"    {x.refcnt} {x}")
+
+    @handle_exc
+    def do_program(self, arg):
+        symname = arg
+        if symname not in self.symbols.syms:
+            print(f"Unknown symbol {symname}")
+            return
+        r = symbll.compile_program(symname, self.symbols)
+        print(r)
+        r.deref()
 
     @handle_exc
     def do_eval(self, arg):
