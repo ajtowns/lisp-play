@@ -22,18 +22,18 @@ import symbll
 
 # To do:
 #
-#  * make bll evaluation work
-#  * make compilation work
-#
 #  * all the opcodes
-#  * implement op_partial
+#  * implement "partial"
+#  * implement "softfork"
+#  * make "blleval" / "apply" available in symbll
+#  * add tx/utxo commands
+#
+#  * add support for "@SYM" to mean SYM turned into a bll program?
+#
 #  * default values for fn arguments
 #  * destructuring of fn arguments?
 #  * defconst for compile-time constants (with quote support)
 #  * quasiquote support
-#  * add a blleval opcode for symbll?
-#
-#  * add tx/utxo commands
 #
 #  * do stuff about costs?
 #  * do stuff about ensuring refcounting is correct?
@@ -143,10 +143,19 @@ class BTCLispRepl(cmd.Cmd):
     @handle_exc
     def do_blleval(self, arg):
         before = ALLOCATOR.x
-        se = SExpr.parse(arg)
-        s = bll.ToBLL(se)
-        se.deref()
-        env = Atom(0)
+        se = SExpr.parse(arg, manypy=True)
+        if len(se) < 1 or len(se) > 2:
+            for x in se: x.deref()
+            print("too many arguments")
+            return
+
+        s = bll.ToBLL(se[0])
+        se[0].deref()
+        if len(se) > 1:
+            env = bll.ToBLL(se[1])
+            se[1].deref()
+        else:
+            env = Atom(0)
         r = bll.eval(s, env)
         print(r)
         r.deref()
