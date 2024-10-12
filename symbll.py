@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from element import Element, SExpr, Atom, Cons, Error, Func
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
+from bll import OpAtom
 
 ####
 
@@ -464,19 +465,6 @@ def symbolic_eval(sexpr, globalsyms):
         wi.step()
 
     return wi.get_result()
-
-SpecialBLLOps = {
-    'q': 0,
-    'a': 1,
-    'sf': 2,
-    'partial': 3,
-}
-
-def OpAtom(opcode):
-    if opcode in SpecialBLLOps:
-        return Atom(SpecialBLLOps[opcode])
-    else:
-        return Atom(SExpr_FUNCS[opcode])
 
 def ResolveIndex(symname, globalidx, localidx):
     s = localidx[symname]

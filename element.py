@@ -470,11 +470,11 @@ class SerDeser:
         assert False, "this line should be unreachable"
 
 class SExpr:
-    re_parse = re.compile("(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<tick>['])|(?P<atom>[^'()\s.]+)")
-    re_int = re.compile("^-?\d+$")
-    re_hex = re.compile("^0x[0-9a-fA-F]+$")
-    re_quote = re.compile('^"[^"]*"$')
-    re_sym = re.compile('^[a-zA-Z0-9_<>=~&|^+*/%-]+$')
+    re_parse = re.compile(r"(?P<ws>\s+)|(?P<open>[(])|(?P<close>[)])|(?P<dot>[.])|(?P<tick>['])|(?P<atom>[^'()\s.]+)")
+    re_int = re.compile(r"^-?\d+$")
+    re_hex = re.compile(r"^0x[0-9a-fA-F]+$")
+    re_quote = re.compile(r'^"[^"]*"$')
+    re_sym = re.compile(r'^[a-zA-Z0-9_<>=~&|^+*/%-]+$')
 
     @staticmethod
     def list_to_element(l):

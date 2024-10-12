@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Any, Self
 
 from element import SExpr, Atom, ALLOCATOR
+import bll
 import symbll
 
 ##########
@@ -129,6 +130,32 @@ class BTCLispRepl(cmd.Cmd):
     def do_EOF(self, arg):
         if self.prompt != "": print()
         return True
+
+    @handle_exc
+    def do_tobll(self, arg):
+        s = SExpr.parse(arg)
+        b = bll.ToBLL(s)
+        print(b)
+        s.deref()
+        b.deref()
+
+
+    @handle_exc
+    def do_blleval(self, arg):
+        before = ALLOCATOR.x
+        se = SExpr.parse(arg)
+        s = bll.ToBLL(se)
+        se.deref()
+        env = Atom(0)
+        r = bll.eval(s, env)
+        print(r)
+        r.deref()
+        env.deref()
+        print(f"allocation: {before} -> {ALLOCATOR.x}")
+        if before < ALLOCATOR.x:
+            print("allocated:")
+            for x in ALLOCATOR.allocated:
+                print(f"    {x.refcnt} {x}")
 
     @handle_exc
     def do_compile(self, arg):
