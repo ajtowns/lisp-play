@@ -678,37 +678,33 @@ class op_secp256k1_muladd(Operator):
             print("XXX muladd", [(a, p.to_bytes_compressed().hex()) for (a,p) in self.aps])
             return Error(f"secp256k1_muladd: did not sum to inf {x.to_bytes_compressed().hex()}")
         return Atom(1)
+'''
 
-class op_bip340_verify(Operator):
-    def __init__(self):
-        self.args = []
 
-    def argument(self, el):
-        if not el.is_atom():
-            raise Exception("bip340_verify: argument must be atom")
-        if len(self.args) < 3:
-            self.args.append(el)
-        else:
-            raise Exception("bip340_verify: too many arguments")
+class op_bip340_verify(FixOpcode):
+    min_args = max_args = 3
 
-    def finish(self):
-        # XXX probably buggy to raise without freeing pk/m/sig?
-        if len(self.args) != 3:
-            raise Exception("bip340_verify: too few arguments")
-        pk, m, sig = self.args
-        if pk.val2 != 32 or m.val2 != 32 or sig.val2 != 64:
-            r = False
-        else:
-            r = verystable.core.key.verify_schnorr(key=pk.val1, sig=sig.val1, msg=m.val1)
-        fail = (not r and sig.val2 != 0)
-        pk.deref()
-        m.deref()
-        sig.deref()
-        if fail:
+    @classmethod
+    def operation(cls, pk, m, sig):
+        if not pk.is_atom() or pk.val1 != 32:
+            return Error("invalid pubkey")
+        if not m.is_atom() or m.val1 != 32:
+            return Error("invalid msg")
+
+        if sig.is_nil():
+            return sig.bumpref()
+
+        if not sig.is_atom() or (sig.val1 != 64 and sig.val1 != 0):
+            return Error("invalid sig")
+
+        r = verystable.core.key.verify_schnorr(key=pk.val2, sig=sig.val2, msg=m.val2)
+        if not r:
+            # must be an error to allow for batch verification
             return Error("bip340_verify: invalid, non-empty signature")
-        else:
-            return Atom(r)
 
+        return Atom(1)
+
+'''
 class op_bip342_txmsg(Operator):
     def __init__(self):
         self.sighash = None
@@ -935,7 +931,7 @@ FUNCS = [
   (0x23, "ripemd160", op_ripemd160),
   (0x24, "hash160", op_hash160),
   (0x25, "hash256", op_hash256),
-#  (0x26, "bip340_verify", op_bip340_verify),
+  (0x26, "bip340_verify", op_bip340_verify),
 #  (0x27, "ecdsa_verify", op_ecdsa_verify),
 #  (0x28, "secp256k1_muladd", op_secp256k1_muladd),
 
