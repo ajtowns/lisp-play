@@ -360,31 +360,35 @@ class op_or(BinOpcode):
         else:
             return left.bumpref()
 
-'''
-class op_eq(Operator):
-    def __init__(self):
-        self.h = None
-        self.ok = True
-    def argument(self, el):
-        if not self.ok:
-            el.deref()
+class op_eq(BinOpcode):
+    @staticmethod
+    def initial_state():
+        return Atom(1)
+
+    @classmethod
+    def binop(cls, left, right):
+        if left.is_nil():
+            # failed already
+            return left.bumpref()
+        elif not right.is_atom():
+            # non-atoms aren't compared with this opcode
+            return Atom(0)
+        elif left.is_atom():
+            # first arg, nothing to be equal to
+            return Cons(right.bumpref(), left.bumpref())
         else:
-            if self.h is None:
-                self.h = el
-                return
+            assert left.is_cons() and left.val1.is_atom()
+            if left.val1.val1 != right.val1 or left.val1.val2 != right.val2:
+                return Atom(0)
             else:
-                if not Element.check_equal([(self.h, el)]):
-                    self.h.deref()
-                    self.h, self.ok = None, False
-                el.deref()
-    def finish(self):
-        if self.h is not None:
-            self.h.deref()
-            self.h = None
-        return Atom(self.ok)
-    def abandon(self):
-       return [self.h] if self.h is not None else []
-'''
+                return left.bumpref()
+
+    @staticmethod
+    def finish(state):
+        if state.is_cons():
+            return state.val2.bumpref()
+        else:
+            return state.bumpref()
 
 class op_strlen(BinOpcode):
     @classmethod
@@ -898,7 +902,7 @@ FUNCS = [
   (0x0c, "all", op_and),
   (0x0d, "any", op_or),
 
-#  (0x0e, "=", op_eq),
+  (0x0e, "=", op_eq),  # compares atoms only
 #  (0x0f, "<s", op_lt_str),
   (0x10, "strlen", op_strlen),
 #  (0x11, "substr", op_substr),
