@@ -113,9 +113,11 @@ class BTCLispRepl(cmd.Cmd):
 
     def show_state(self):
         if self.wi is None: return
+        s = ""
         for c in reversed(self.wi.continuations):
-            s = " ".join(f"{k}={v}" for k,v in c.localsyms.syms.items())
-            if s != "": s = f"    [{s}]"
+            if hasattr(c, "localsyms"):
+                s = " ".join(f"{k}={v}" for k,v in c.localsyms.syms.items())
+                if s != "": s = f"    [{s}]"
             print(f"   -- {c.fn}    {c.args}{s}")
 
     def default(self, line):
@@ -140,23 +142,33 @@ class BTCLispRepl(cmd.Cmd):
         b.deref()
 
 
-    @handle_exc
-    def do_blleval(self, arg):
-        before = ALLOCATOR.x
+    def bllparse(self, arg):
         se = SExpr.parse(arg, manypy=True)
         if len(se) < 1 or len(se) > 2:
             for x in se: x.deref()
             print("too many arguments")
             return
 
-        s = bll.ToBLL(se[0])
+        if se[0].is_symbol() and se[0].val2[0] == '@':
+            prog = symbll.compile_program(se[0].val2[1:], self.symbols)
+        else:
+            prog = bll.ToBLL(se[0])
         se[0].deref()
         if len(se) > 1:
             env = bll.ToBLL(se[1])
             se[1].deref()
         else:
             env = Atom(0)
-        r = bll.eval(s, env)
+
+        return prog, env
+
+    @handle_exc
+    def do_blleval(self, arg):
+        before = ALLOCATOR.x
+
+        prog, env = self.bllparse(arg)
+        r = bll.eval(prog, env)
+
         print(r)
         r.deref()
         env.deref()
@@ -165,6 +177,16 @@ class BTCLispRepl(cmd.Cmd):
             print("allocated:")
             for x in ALLOCATOR.allocated:
                 print(f"    {x.refcnt} {x}")
+
+    @handle_exc
+    def do_blldebug(self, arg):
+        if self.wi is not None:
+            print("Already debugging an expression")
+            return
+        prog, env = self.bllparse(arg)
+        self.wi = bll.WorkItem.begin(prog, env)
+        env.deref()
+        self.show_state()
 
     @handle_exc
     def do_compile(self, arg):

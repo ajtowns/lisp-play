@@ -474,7 +474,7 @@ class SExpr:
     re_int = re.compile(r"^-?\d+$")
     re_hex = re.compile(r"^0x[0-9a-fA-F]+$")
     re_quote = re.compile(r'^"[^"]*"$')
-    re_sym = re.compile(r'^[a-zA-Z0-9_<>=~&|^+*/%-]+$')
+    re_sym = re.compile(r'^[@]?[a-zA-Z0-9_<>=~&|^+*/%-]+$')
 
     @staticmethod
     def list_to_element(l):

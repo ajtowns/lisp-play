@@ -121,10 +121,12 @@ class fn_eval(Functor):
             cont.fn = fn_fin()
             return cont.fn.step(workitem)
         elif cont.args.is_atom():
-            envarg = cont.ResolveEnv(cont.args.as_int())
-            cont.args.deref()
+            v = cont.args.as_int()
+            if v >= 1:
+                envarg = cont.ResolveEnv(v)
+                cont.args.deref()
+                cont.args = envarg
             cont.fn = fn_fin()
-            cont.args = envarg
         elif cont.args.is_cons():
             op, cont.args = cont.args.steal_children()
             opcode = op.as_int() if op.is_atom() else None
@@ -200,7 +202,12 @@ class fn_op(FunctorNormal):
 
         nof = self.op_func.val2.argument(self.op_func.val1, value)
         value.deref()
-        assert isinstance(nof, Element) and nof.is_func()
+        if nof.is_error():
+            workitem.error(nof.val2)
+            nof.deref()
+            return
+
+        assert isinstance(nof, Element) and nof.is_func(), f"{nof} is not a func? {self.op_func}"
         assert issubclass(self._get_type(nof.val2), Opcode)
         self.op_func.deref()
         self.op_func = nof
@@ -259,10 +266,11 @@ class Continuation:
     env: Element
 
     def ResolveEnv(self, idx):
+        idxstart = idx
         env = self.env
         while idx > 1:
             if not env.is_cons():
-                return Error("invalid env reference")
+                return Error(f"invalid env reference {idxstart} : {self.env}")
             if idx % 2 == 0:
                 env = env.val1
             else:

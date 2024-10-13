@@ -109,7 +109,6 @@ class SymbolIndex(SymbolContainer):
         for (n,si),pos in x:
             si.position = pos*m + a
             self.indexes[n] = si
-        print("AAA", self.indexes)
 
     def __iter__(self):
         yield from self.ordering
@@ -517,13 +516,13 @@ def compile_expr(sexpr, globalidx, localidx):
                 return SExpr.list_to_element([OpAtom("i"), cond_expr])
             elif not sexpr.val2.val2.val2.is_cons():
                 assert sexpr.val2.val2.val2.is_nil()
-                then_expr = compile_expr(sexpr.val2.val2.val1, globalidx, localidx)
+                then_expr = Cons(OpAtom('q'), compile_expr(sexpr.val2.val2.val1, globalidx, localidx))
                 i_expr = SExpr.list_to_element([OpAtom("i"), cond_expr, then_expr])
                 return SExpr.list_to_element([OpAtom("a"), i_expr])
             elif not sexpr.val2.val2.val2.val2.is_cons():
                 assert sexpr.val2.val2.val2.val2.is_nil()
-                then_expr = compile_expr(sexpr.val2.val2.val1, globalidx, localidx)
-                else_expr = compile_expr(sexpr.val2.val2.val2.val1, globalidx, localidx)
+                then_expr = Cons(OpAtom('q'), compile_expr(sexpr.val2.val2.val1, globalidx, localidx))
+                else_expr = Cons(OpAtom('q'), compile_expr(sexpr.val2.val2.val2.val1, globalidx, localidx))
                 i_expr = SExpr.list_to_element([OpAtom("i"), cond_expr, then_expr, else_expr])
                 return SExpr.list_to_element([OpAtom("a"), i_expr])
             else:
@@ -535,8 +534,9 @@ def compile_expr(sexpr, globalidx, localidx):
             s = ResolveIndex(symname, globalidx, localidx)
             if s is None:
                 raise Exception("invalid symbol")
-            b_l = Cons(OpAtom('b'), compile_args(sexpr.val2, globalidx, localidx))
-            a_l = [OpAtom('a'), Atom(s.position), b_l]
+            loc_l = Cons(OpAtom('b'), compile_args(sexpr.val2, globalidx, localidx))
+            globloc_l = [OpAtom('rc'), loc_l, Atom(2)]
+            a_l = [OpAtom('a'), Atom(s.position), SExpr.list_to_element(globloc_l)]
             return SExpr.list_to_element(a_l)
 
 def compile_fn(symname, globs, globidx):
@@ -551,28 +551,26 @@ def compile_fn(symname, globs, globidx):
             else:
                 raise Exception("function parameters aren't symbols")
             params = params.val2
-        print("ZZZ", globs.syms[symname])
         sexpr = globs.syms[symname][1]
     x = compile_expr(sexpr, globidx, SymbolIndex(loc, offset=3))
     loc.deref()
     return x
 
 def compile_program(symname, globalsyms):
-    # (a (q N) (rc 1 (b GLOBALS)))
+    # (a (q a N) (rc 1 (b GLOBALS)))
 
     assert isinstance(symname, str)
     assert isinstance(globalsyms, SymbolTable)
     assert symname in globalsyms.syms
 
     globidx = SymbolIndex(globalsyms, offset=2)
-    print("YYY", globalsyms.syms[symname], globidx[symname])
     b_lst = [OpAtom('b')]
     for globsym in globidx:
         globex = compile_fn(globsym, globalsyms, globidx)
         b_lst.append(Cons(OpAtom('q'), globex))
 
     rc_lst = [OpAtom('rc'), Atom(1), SExpr.list_to_element(b_lst)]
-    fin_lst = [OpAtom('a'), Cons(OpAtom('q'), Atom(globidx[symname].position)),
-                SExpr.list_to_element(rc_lst)]
+    in_lst = [OpAtom('q'), OpAtom('a'), Atom(globidx[symname].position)]
+    fin_lst = [OpAtom('a'), SExpr.list_to_element(in_lst), SExpr.list_to_element(rc_lst)]
 
     return SExpr.list_to_element(fin_lst)

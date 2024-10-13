@@ -148,11 +148,13 @@ class FixOpcode(Opcode):
 
 class op_x(Opcode):
     # XXX perhaps should actually combine the args and include a message
+    @classmethod
     def argument(self, state, arg):
-        return Error()
+        return Error("exception")
 
-    def finish(state):
-        return Error()
+    @classmethod
+    def finish(cls, state):
+        return Error("exception")
 
 class op_add(BinOpcode):
     @classmethod
@@ -160,7 +162,7 @@ class op_add(BinOpcode):
         if left.is_atom() and right.is_atom():
             return Atom(left.as_int() + right.as_int())
         else:
-            return Error()
+            return Error("add requires atoms")
 
 class op_sub(Opcode):
     @staticmethod
@@ -170,7 +172,7 @@ class op_sub(Opcode):
     @classmethod
     def argument(cls, state, arg):
         if not arg.is_atom():
-            return Error()
+            return Error("sub requires atoms")
         if state.is_cons() and state.val1.is_nil():
             return Func(Cons(Atom(1), arg.bumpref()), op_sub)
         elif state.is_cons():
@@ -195,7 +197,7 @@ class op_mul(BinOpcode):
         if left.is_atom() and right.is_atom():
             return Atom(left.as_int() * right.as_int())
         else:
-            return Error()
+            return Error("mul requires atoms")
 
 class op_mod(FixOpcode):
     min_args = max_args = 2
@@ -203,7 +205,7 @@ class op_mod(FixOpcode):
     @classmethod
     def operation(cls, num, den):
         if not num.is_atom() or not den.is_atom():
-            return Error()
+            return Error("mod requires atoms")
         return Atom(num.as_int() % den.as_int())
 
 class op_i(FixOpcode):
@@ -359,12 +361,6 @@ class op_or(BinOpcode):
             return left.bumpref()
 
 '''
-class op_softfork(Operator):
-    def argument(self, el):
-        el.deref()
-    def finish(self):
-        return Atom(1)
-
 class op_eq(Operator):
     def __init__(self):
         self.h = None
@@ -388,51 +384,23 @@ class op_eq(Operator):
         return Atom(self.ok)
     def abandon(self):
        return [self.h] if self.h is not None else []
+'''
 
-class op_strlen(Operator):
-   def __init__(self):
-       self.v = 0
-   def argument(self, el):
-        if not el.is_atom():
-            raise Exception("len: not an atom")
-        self.v += el.val2
-        el.deref()
-   def finish(self):
-        return Atom(self.v)
+class op_strlen(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Error("not an atom")
+        return Atom(left.as_int() + len(right.val2))
 
-class op_cat(Operator):
-    def __init__(self):
-        self.build = None
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("cat: argument not an atom")
-        if self.build is None:
-            self.build = el
-            if self.build._refs > 1:
-                self.build = self.build.dupe_atom()
-        else:
-            assert self.build._refs == 1
-            new_size = self.build.val2 + el.val2
-            if new_size <= 8:
-                self.build.val1 += (el.val1 << (8*self.build.val2))
-                self.build.val2 = new_size
-            else:
-                old_alloc = self.build.alloc_size()
-                if self.build.val2 <= 8:
-                    self.build.val1 = self.build.atom_as_bytes()
-                self.build.val1 += el.atom_as_bytes()
-                self.build.val2 = new_size
-                ALLOCATOR.realloc(old_alloc, self.build.alloc_size(), self.build)
-            el.deref()
+class op_cat(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Error("not an atom")
+        return Atom(left.val2 + right.val2)
 
-    def finish(self):
-        if self.build is None: return Atom(0)
-        b = self.build
-        self.build = None
-        return b
-
-    def abandon(self):
-       return [self.build] if self.build is not None else []
-
+'''
 class op_substr(Operator):
     def __init__(self):
         self.el = None
@@ -932,9 +900,9 @@ FUNCS = [
 
 #  (0x0e, "=", op_eq),
 #  (0x0f, "<s", op_lt_str),
-#  (0x10, "strlen", op_strlen),
+  (0x10, "strlen", op_strlen),
 #  (0x11, "substr", op_substr),
-#  (0x12, "cat", op_cat),
+  (0x12, "cat", op_cat),
 
   # not really convinced these make sense as u64 (vs generic bitwise ops)
   # (eg, (~ 0x80) becomes 0x7FFF_FFFF_FFFF_FFFF which is weird)
