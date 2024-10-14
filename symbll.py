@@ -296,10 +296,14 @@ class fn_op(Functor):
 
         nof = self.op_func.val2.argument(self.op_func.val1, value)
         value.deref()
-        assert isinstance(nof, Element) and nof.is_func()
-        assert issubclass(self._get_type(nof.val2), Opcode)
-        self.op_func.deref()
-        self.op_func = nof
+        assert isinstance(nof, Element)
+        if nof.is_error():
+            workitem.error(nof.val2)
+            nof.deref()
+        else:
+            assert nof.is_func() and issubclass(self._get_type(nof.val2), Opcode)
+            self.op_func.deref()
+            self.op_func = nof
 
 class fn_if(Functor):
     def step(self, workitem):

@@ -404,55 +404,39 @@ class op_cat(BinOpcode):
             return Error("not an atom")
         return Atom(left.val2 + right.val2)
 
-'''
-class op_substr(Operator):
-    def __init__(self):
-        self.el = None
-        self.start = None
-        self.end = None
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("substr: arguments must be atoms")
-        if self.el is None:
-            self.el = el
-        elif self.start is None:
-            self.start = el.atom_as_u64()
-            el.deref()
-        elif self.end is None:
-            self.end = el.atom_as_u64()
-            el.deref()
-        else:
-            raise Exception("substr: too many arguments")
-    def finish(self):
-        el = self.el
-        self.el = None
+class op_substr(FixOpcode):
+    min_args = 0
+    max_args = 3
 
-        if el is None: return Atom(0)
-        if self.start is None: return el
-        if self.start == 0:
-            if self.end is None: return el
-            if self.end >= el.val2: return el
-        if self.end is None:
-            self.end = el.val2
-        if self.start > el.val2:
-            el.deref()
+    @classmethod
+    def operation(cls, el=None, start=None, end=None):
+        if el is None:
             return Atom(0)
-        if el.val2 <= 8:
-            m = 0xFFFF_FFFF_FFFF_FFFF
-            n = el.val1
-            assert n <= m
-            q = ((m^(m<<(self.end*8))) & n) >> (self.start*8)
-            assert 0 <= q
-            assert q <= m
-            print("XXX", hex(q), self.end-self.start)
-            s = Atom(q, self.end-self.start)
+        if not el.is_atom():
+            return Error("substr: cannot take substr of non-atom")
+
+        if start is None:
+            return el.bumpref()
+        if not start.is_atom():
+            return Error("substr: start must be atom")
+        start = start.as_int()
+
+        if end is not None and not end.is_atom(): 
+            return Error("substr: end must be atom")
+        if end is None:
+            end = el.val1
         else:
-            s = Atom(el.val1[self.start:self.end])
-        el.deref()
-        return s
+            end = end.as_int()
 
-    def abandon(self):
-       return [self.el] if self.el is not None else []
+        if start == 0 and end >= el.val1:
+            return el.bumpref()
 
+        if start > el.val1:
+            return Atom(0)
+
+        return Atom(el.val2[start:end])
+
+'''
 class op_nand_u64(Operator):
     def __init__(self):
         self.i = 0xFFFF_FFFF_FFFF_FFFF
@@ -930,11 +914,9 @@ FUNCS = [
   (0x0e, "=", op_eq),  # compares atoms only
 #  (0x0f, "<s", op_lt_str),
   (0x10, "strlen", op_strlen),
-#  (0x11, "substr", op_substr),
+  (0x11, "substr", op_substr),
   (0x12, "cat", op_cat),
 
-  # not really convinced these make sense as u64 (vs generic bitwise ops)
-  # (eg, (~ 0x80) becomes 0x7FFF_FFFF_FFFF_FFFF which is weird)
 #  (0x13, "~", op_nand_u64),
 #  (0x14, "&", op_and_u64),
 #  (0x15, "|", op_or_u64),
@@ -966,6 +948,14 @@ FUNCS = [
 
 #  (0x29, "tx", op_tx),
 #  (0x2a, "bip342_txmsg", op_bip342_txmsg),
+
+#  ideas:
+#    (signextend 4 0x81) -> 0x01000080
+#    (max a b c)
+#    (min a b c)
+#    (rev 0x01020304) -> 0x04030201
+#    (abs 0x81) -> 0x01
+#    (constant K) -> (G, H, G/2, curve order, etc)
 ]
 
 
