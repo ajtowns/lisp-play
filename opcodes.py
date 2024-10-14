@@ -991,19 +991,40 @@ def _Do_FUNCS():
     return se, op
 SExpr_FUNCS, Op_FUNCS = _Do_FUNCS()
 
+GLOBAL_TX = None
+GLOBAL_TX_INPUT_IDX = None
+GLOBAL_TX_SCRIPT = None
+GLOBAL_UTXOS = None
+
 def Set_GLOBAL_TX(tx):
     global GLOBAL_TX
     GLOBAL_TX = tx
+
+def Get_GLOBAL_TX():
+    global GLOBAL_TX
+    return GLOBAL_TX
 
 def Set_GLOBAL_TX_INPUT_IDX(idx):
     global GLOBAL_TX_INPUT_IDX
     GLOBAL_TX_INPUT_IDX = idx
 
+def Get_GLOBAL_TX_INPUT_IDX():
+    global GLOBAL_TX_INPUT_IDX
+    return GLOBAL_TX_INPUT_IDX
+
 def Set_GLOBAL_TX_SCRIPT(scr):
     global GLOBAL_TX_SCRIPT
     GLOBAL_TX_SCRIPT = scr
 
+def Get_GLOBAL_TX_SCRIPT():
+    global GLOBAL_TX_SCRIPT
+    return GLOBAL_TX_SCRIPT
+
 def Set_GLOBAL_UTXOS(utxos):
     global GLOBAL_UTXOS
     GLOBAL_UTXOS = utxos
+
+def Get_GLOBAL_UTXOS():
+    global GLOBAL_UTXOS
+    return GLOBAL_UTXOS
 

@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Any, Self
 
 from element import SExpr, Atom, ALLOCATOR
+from opcodes import Set_GLOBAL_TX, Get_GLOBAL_TX, Set_GLOBAL_TX_INPUT_IDX, Get_GLOBAL_TX_INPUT_IDX, Set_GLOBAL_TX_SCRIPT, Get_GLOBAL_TX_SCRIPT, Set_GLOBAL_UTXOS, Get_GLOBAL_UTXOS
 import bll
 import symbll
+import verystable.core.messages
 
 ##########
 
@@ -302,10 +304,78 @@ class BTCLispRepl(cmd.Cmd):
             if x == "": continue
             self.symbols.unset(x)
 
+    @handle_exc
+    def do_tx(self, arg):
+        if arg == "":
+            tx = Get_GLOBAL_TX()
+            if tx is None:
+                print("No tx set")
+            else:
+                print(tx.serialize().hex())
+        else:
+            try:
+                tx = verystable.core.messages.tx_from_hex(arg)
+            except:
+                print("Could not parse tx")
+                return
+            Set_GLOBAL_TX(tx)
+
+    @handle_exc
+    def do_tx_in_idx(self, arg):
+        if arg == "":
+            idx = Get_GLOBAL_TX_INPUT_IDX()
+            if idx is None:
+                print("No tx input idx set")
+            else:
+                print(idx)
+        else:
+            try:
+                idx = int(arg)
+            except:
+                idx = None
+            if idx is None or idx < 0:
+                print("Could not parse index")
+            else:
+                Set_GLOBAL_TX_INPUT_IDX(idx)
+
+    @handle_exc
+    def do_tx_script(self, arg):
+        if arg == "":
+            scr = Get_GLOBAL_TX_SCRIPT()
+            if scr is None:
+                print("No tx script set")
+            else:
+                print(scr.hex())
+        else:
+            try:
+                scr = bytes.fromhex(arg)
+            except:
+                print("Could not parse tx script")
+                return
+            Set_GLOBAL_TX_SCRIPT(scr)
+
+    @handle_exc
+    def do_utxos(self, arg):
+        if arg == "":
+            utxos = Get_GLOBAL_UTXOS()
+            if utxos is None:
+                print("No utxos set")
+            else:
+                for i,u in enumerate(utxos):
+                    print(f"{i} {u.serialize().hex()}")
+        else:
+            try:
+                utxos = []
+                for uh in arg.split(" "):
+                    utxos.append(verystable.core.messages.from_hex(verystable.core.messages.CTxOut(), uh))
+            except:
+                print("Could not parse utxos")
+                return
+            Set_GLOBAL_UTXOS(utxos)
+
 if __name__ == "__main__":
     if os.isatty(sys.stdin.fileno()):
         repl = BTCLispRepl()
     else:
         repl = BTCLispRepl(prompt="")
     repl.cmdloop()
-
