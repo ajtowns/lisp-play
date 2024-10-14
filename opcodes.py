@@ -208,6 +208,27 @@ class op_mod(FixOpcode):
             return Error("mod requires atoms")
         return Atom(num.as_int() % den.as_int())
 
+class op_lt_num(BinOpcode):
+    @staticmethod
+    def initial_state():
+        return Atom(1)
+
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Atom(0)
+        if left.is_cons():
+            if left.val2.as_int() >= right.as_int():
+                return Atom(0)
+        return Cons(Atom(1), right.bumpref())
+
+    @staticmethod
+    def finish(state):
+        if state.is_atom():
+            return state.bumpref()
+        else:
+            return state.val1.bumpref()
+
 class op_i(FixOpcode):
     min_args = 1
     max_args = 3
@@ -581,20 +602,6 @@ class op_div_u64(Operator):
         if self.i is None:
             raise Exception("div: missing arguments")
         return Atom(self.i)
-
-class op_lt_lendian(op_lt_str):
-    @classmethod
-    def lt(cls, a, b):
-        lena = len(a)
-        lenb = len(b)
-        i = max(lena, lenb)
-        while i > 0:
-            i -= 1
-            ca = a[i] if i < lena else 0
-            cb = b[i] if i < lenb else 0
-            if ca < cb: return True
-            if ca > cb: return False
-        return False
 '''
 
 class op_list_read(FixOpcode):
@@ -944,10 +951,7 @@ FUNCS = [
 #  (0x1b, "/%", op_divmod), # (/ a b) => (h (/% a b))
 #  (0x1c, "<<", op_lshift),
 #  (0x1d, ">>", op_rshift),
-#  (0x1e, "<", op_lt_lendian),   # not restricted to u64
-#  (0x1f, "log2b42", op_log2b42_u64),  # returns floor(log_2(x) * 2**42)
-      ## allow this to apply to arbitrary atoms?
-      ## (log of a 500kB atoms will fit into a u64)
+  (0x1e, "<", op_lt_num),   # not restricted to u64
 
   (0x20, "rd", op_list_read), # read bytes to Element
   (0x21, "wr", op_list_write), # write Element as bytes
@@ -972,6 +976,7 @@ FUNCS = [
 #    (rev 0x01020304) -> 0x04030201
 #    (abs 0x81) -> 0x01
 #    (constant K) -> (G, H, G/2, curve order, etc)
+#    (log2b42 N) -> floor(log_2(n) * 2**42), error if n<=0
 ]
 
 
