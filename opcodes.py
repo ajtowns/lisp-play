@@ -486,6 +486,27 @@ class op_substr(FixOpcode):
 
         return Atom(el.val2[start:end])
 
+class op_lt_str(BinOpcode):
+    @staticmethod
+    def initial_state():
+        return Atom(1)
+
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Atom(0)
+        if left.is_cons():
+            if left.val2.val2 >= right.val2:
+                return Atom(0)
+        return Cons(Atom(1), right.bumpref())
+
+    @staticmethod
+    def finish(state):
+        if state.is_atom():
+            return state.bumpref()
+        else:
+            return state.val1.bumpref()
+
 '''
 class op_nand_u64(Operator):
     def __init__(self):
@@ -561,40 +582,6 @@ class op_div_u64(Operator):
             raise Exception("div: missing arguments")
         return Atom(self.i)
 
-class op_lt_str(Operator):
-    def __init__(self):
-        self.last = None
-        self.ok = True
-
-    @classmethod
-    def lt(cls, a, b):
-        return a < b
-
-    def argument(self, el):
-        if not self.ok:
-            el.deref()
-            return
-
-        if self.last is None:
-            self.last = el
-        else:
-            self.ok = self.lt(self.last.atom_as_bytes(), el.atom_as_bytes())
-            self.last.deref()
-            if self.ok:
-                self.last = el
-            else:
-                el.deref()
-                self.last = None
-
-    def finish(self):
-        if self.last is not None:
-            self.last.deref()
-            self.last = None
-        return Atom(self.ok)
-
-    def abandon(self):
-        return [self.last] if self.last is not None else []
-
 class op_lt_lendian(op_lt_str):
     @classmethod
     def lt(cls, a, b):
@@ -608,49 +595,27 @@ class op_lt_lendian(op_lt_str):
             if ca < cb: return True
             if ca > cb: return False
         return False
+'''
 
-class op_list_read(Operator):
-    def __init__(self):
-        self.el = None
+class op_list_read(FixOpcode):
+    min_args = max_args = 1
 
-    def argument(self, el):
-        if self.el is not None:
-            raise Exception("rd: too many arguments")
+    @classmethod
+    def operation(cls, el):
         if not el.is_atom():
             raise Exception("rd: argument must be atom")
-        self.el = el
-
-    def abandon(self):
-        return [self.el] if self.el is not None else []
-
-    def finish(self):
-        if self.el is None:
-            return Error(f"rd: argument required")
-        edeser = SerDeser().Deserialize(self.el.atom_as_bytes())
-        self.el.deref()
-        self.el = None
+        edeser = SerDeser().Deserialize(el.val2)
         return edeser
 
-class op_list_write(Operator):
-    def __init__(self):
-        self.el = None
+class op_list_write(FixOpcode):
+    min_args = max_args = 1
 
-    def argument(self, el):
-        if self.el is not None:
-            raise Exception("rd: too many arguments")
-        self.el = el
-
-    def abandon(self):
-        return [self.el] if self.el is not None else []
-
-    def finish(self):
-        if self.el is None:
-            return Error(f"rd: argument required")
-        eser = SerDeser().Serialize(self.el)
-        self.el.deref()
-        self.el = None
+    @classmethod
+    def operation(cls, el):
+        eser = SerDeser().Serialize(el)
         return Atom(eser)
 
+'''
 class op_secp256k1_muladd(Operator):
     """(secp256k1_muladd a (b) (c . d) (1 . e) (nil . f))
        checks that a*G - b*G + c*D + E - F = 0
@@ -962,7 +927,7 @@ FUNCS = [
   (0x0d, "any", op_or),
 
   (0x0e, "=", op_eq),  # compares atoms only
-#  (0x0f, "<s", op_lt_str),
+  (0x0f, "<s", op_lt_str),
   (0x10, "strlen", op_strlen),
   (0x11, "substr", op_substr),
   (0x12, "cat", op_cat),
@@ -984,8 +949,8 @@ FUNCS = [
       ## allow this to apply to arbitrary atoms?
       ## (log of a 500kB atoms will fit into a u64)
 
-#  (0x20, "rd", op_list_read), # read bytes to Element
-#  (0x21, "wr", op_list_write), # write Element as bytes
+  (0x20, "rd", op_list_read), # read bytes to Element
+  (0x21, "wr", op_list_write), # write Element as bytes
 
   (0x22, "sha256", op_sha256),
   (0x23, "ripemd160", op_ripemd160),
@@ -999,7 +964,9 @@ FUNCS = [
 #  (0x2a, "bip342_txmsg", op_bip342_txmsg),
 
 #  ideas:
-#    (signextend 4 0x81) -> 0x01000080
+#    (signextend 0x81 4) -> 0x01000080
+#       (signextend 0x123400 0) = (signextend 0x123400) -> 0x1234
+#       (= (signextend a) (signextend b)) <-- numequal
 #    (max a b c)
 #    (min a b c)
 #    (rev 0x01020304) -> 0x04030201

@@ -386,35 +386,35 @@ class SerDeser:
         return r
 
     def _Serialize(self, el):
-        if el.kind == CONS and el.val1.is_nil():
+        if el.is_cons() and el.val1.is_nil():
             v = 0x80
             el = el.val2
         else:
             v = 0
 
-        if el.kind == ATOM:
-            k = el.atom_as_bytes()
-            assert len(k) == el.val2
+        if el.is_atom():
+            k = el.val2
+            assert len(k) == el.val1
             if el.is_nil():
                 self.b += bytes([v|0x00])
                 return
-            elif el.val2 == 1:
+            elif el.val1 == 1:
                 if 1 <= k[0] <= self.MAX_QUICK_ONEBYTE:
                     self.b += bytes([v|k[0]])
                 else:
                     self.b += bytes([v|(self.QUICK_LEFTOVER), k[0]])
                 return
-            elif el.val2 >= 2 and el.val2 <= self.MAX_QUICK_MULTIBYTE:
-                self.b += bytes([v|(self.QUICK_MULTIBYTE_OFFSET+el.val2)])
+            elif el.val1 >= 2 and el.val1 <= self.MAX_QUICK_MULTIBYTE:
+                self.b += bytes([v|(self.QUICK_MULTIBYTE_OFFSET+el.val1)])
                 self.b += k
                 return
-            elif el.val2 <= self.MAX_QUICK_MULTIBYTE + self.MAX_QUICK_ONEBYTE:
-                assert el.val2 > self.MAX_QUICK_MULTIBYTE
-                self.b += bytes([v|(self.QUICK_LEFTOVER), el.val2 - self.MAX_QUICK_MULTIBYTE])
+            elif el.val1 <= self.MAX_QUICK_MULTIBYTE + self.MAX_QUICK_ONEBYTE:
+                assert el.val1 > self.MAX_QUICK_MULTIBYTE
+                self.b += bytes([v|(self.QUICK_LEFTOVER), el.val1 - self.MAX_QUICK_MULTIBYTE])
                 self.b += k
                 return
             else:
-                l = el.val2 - self.MAX_QUICK_MULTIBYTE - 1
+                l = el.val1 - self.MAX_QUICK_MULTIBYTE - 1
                 assert l >= 0
                 self.b += bytes([v|(self.SLOW_MULTIBYTE)])
                 while l >= 255:
@@ -424,12 +424,12 @@ class SerDeser:
                 self.b += bytes(b)
                 self.b += k
                 return
-        elif el.kind == CONS:
+        elif el.is_cons():
             size = 1
             fin = el
             while True:
-                if fin.val2.kind == ATOM: break
-                if fin.val2.kind != CONS:
+                if fin.val2.is_atom(): break
+                if not fin.val2.is_cons():
                     raise Exception("not serializable")
                 size += 1
                 fin = fin.val2
@@ -452,11 +452,11 @@ class SerDeser:
                     self.b += bytes([size])
             chk = el
             while True:
-                if chk.kind == CONS:
+                if chk.is_cons():
                     self._Serialize(chk.val1)
                     chk = chk.val2
                 else:
-                    assert chk.kind == ATOM
+                    assert chk.is_atom()
                     if not closed:
                         self._Serialize(chk)
                     break
