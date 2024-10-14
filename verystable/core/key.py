@@ -64,9 +64,9 @@ class ECPubKey:
 
         # Extract r and s from the DER formatted signature. Return false for
         # any DER encoding errors.
-        if (sig[1] + 2 != len(sig)):
-            return False
         if (len(sig) < 4):
+            return False
+        if (sig[1] + 2 != len(sig)):
             return False
         if (sig[0] != 0x30):
             return False

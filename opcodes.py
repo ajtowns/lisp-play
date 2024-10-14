@@ -704,6 +704,35 @@ class op_bip340_verify(FixOpcode):
 
         return Atom(1)
 
+class op_ecdsa_verify(FixOpcode):
+    min_args = max_args = 3
+
+    @classmethod
+    def operation(cls, pk, m, sig):
+        if not pk.is_atom() or (pk.val1 != 33 and pk.val1 != 65):
+            return Error(f"invalid pubkey size {pk.val1}")
+
+        ecpk = verystable.core.key.ECPubKey()
+        ecpk.set(pk.val2)
+        if not ecpk.is_valid:
+            return Error(f"invalid pubkey {pk.val2.hex()}")
+
+        if not m.is_atom() or m.val1 != 32:
+            return Error("invalid msg")
+
+        if sig.is_nil():
+            return sig.bumpref()
+
+        if not sig.is_atom():
+            return Error("invalid sig")
+
+        r = ecpk.verify_ecdsa(sig.val2, m.val2, low_s=False)
+        if not r:
+            # must be an error to allow for batch verification
+            return Error("ecdsa_verify: invalid, non-empty signature")
+
+        return Atom(1)
+
 '''
 class op_bip342_txmsg(Operator):
     def __init__(self):
@@ -932,7 +961,7 @@ FUNCS = [
   (0x24, "hash160", op_hash160),
   (0x25, "hash256", op_hash256),
   (0x26, "bip340_verify", op_bip340_verify),
-#  (0x27, "ecdsa_verify", op_ecdsa_verify),
+  (0x27, "ecdsa_verify", op_ecdsa_verify),
 #  (0x28, "secp256k1_muladd", op_secp256k1_muladd),
 
 #  (0x29, "tx", op_tx),
