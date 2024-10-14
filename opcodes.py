@@ -360,6 +360,56 @@ class op_or(BinOpcode):
         else:
             return left.bumpref()
 
+class op_or_bytes(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Error("or_bytes: argument must be atom")
+        out = bytearray(max(left.val1, right.val1))
+        for i,e in enumerate(left.val2):
+            out[i] = e
+        for i,e in enumerate(right.val2):
+            out[i] |= e
+        return Atom(bytes(out))
+
+class op_xor_bytes(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Error("or_bytes: argument must be atom")
+        out = bytearray(max(left.val1, right.val1))
+        for i,e in enumerate(left.val2):
+            out[i] = e
+        for i,e in enumerate(right.val2):
+            out[i] ^= e
+        return Atom(bytes(out))
+
+class op_and_bytes(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Error("or_bytes: argument must be atom")
+        out = bytearray((255 for _ in range(max(left.val1, right.val1))))
+        for i,e in enumerate(left.val2):
+            out[i] = e
+        for i,e in enumerate(right.val2):
+            out[i] &= e
+        return Atom(bytes(out))
+
+class op_nand_bytes(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        if not right.is_atom():
+            return Error("or_bytes: argument must be atom")
+        out = bytearray((255 for _ in range(max(left.val1, right.val1))))
+        for i,e in enumerate(left.val2):
+            out[i] = (e ^ 255)
+        for i,e in enumerate(right.val2):
+            out[i] &= e
+        for i in range(len(out)):
+            out[i] ^= 255
+        return Atom(bytes(out))
+
 class op_eq(BinOpcode):
     @staticmethod
     def initial_state():
@@ -917,19 +967,18 @@ FUNCS = [
   (0x11, "substr", op_substr),
   (0x12, "cat", op_cat),
 
-#  (0x13, "~", op_nand_u64),
-#  (0x14, "&", op_and_u64),
-#  (0x15, "|", op_or_u64),
-#  (0x16, "^", op_xor_u64),
+  (0x13, "~", op_nand_bytes),
+  (0x14, "&", op_and_bytes),
+  (0x15, "|", op_or_bytes),
+  (0x16, "^", op_xor_bytes),
 
   (0x17, "+", op_add),
   (0x18, "-", op_sub),
   (0x19, "*", op_mul),
   (0x1a, "%", op_mod),
-#  (0x1b, "/%", op_divmod_u64), # (/ a b) => (h (/% a b))
-#  (0x1c, "<<", op_lshift_u64),
-#  (0x1d, ">>", op_rshift_u64),
-
+#  (0x1b, "/%", op_divmod), # (/ a b) => (h (/% a b))
+#  (0x1c, "<<", op_lshift),
+#  (0x1d, ">>", op_rshift),
 #  (0x1e, "<", op_lt_lendian),   # not restricted to u64
 #  (0x1f, "log2b42", op_log2b42_u64),  # returns floor(log_2(x) * 2**42)
       ## allow this to apply to arbitrary atoms?

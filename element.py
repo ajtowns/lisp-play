@@ -195,7 +195,6 @@ class Pair(Element):
         return r
 
 class Atom(Store):
-    re_printable = re.compile(b"^[a-zA-Z0-9 _()<>,.\"*:'/%+-]+$")
     kind = ATOM
 
     nil = None
@@ -226,13 +225,10 @@ class Atom(Store):
     def __str__(self):
         if self.val1 == 0:
             return "nil"
-        elif self.val1 < 3:
+        elif self.val1 < 3 and self.val2[-1] != 0 and self.val2[-1] != 0x80:
             return "%d" % self.as_int()
         else:
-            if self.re_printable.match(self.val2):
-                return '"%s"' % (self.val2.decode('utf8'),)
-            else:
-                return "0x%s" % (self.val2.hex(),)
+            return "0x%s" % (self.val2.hex(),)
 
     def as_int(self):
         return bytes_to_int(self.val2)
