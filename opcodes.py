@@ -739,31 +739,41 @@ class op_ecdsa_verify(FixOpcode):
 
         return Atom(1)
 
-'''
-class op_bip342_txmsg(Operator):
-    def __init__(self):
-        self.sighash = None
+class op_bip342_txmsg(FixOpcode):
+    min_args = 0
+    max_args = 1
 
-    def argument(self, el):
-        if self.sighash is not None:
-            raise Exception("bip342_txmsg: too many arguments")
-        if not el.is_atom() or el.val2 > 1:
-            raise Exception("bip342_txmsg: expects a single sighash byte")
-        if el.val2 == 1 and el.val1 not in [0x01, 0x02, 0x03, 0x81, 0x82, 0x83]:
-            raise Exception("bip342_txmsg: unknown sighash byte")
-        self.sighash = el.atom_as_u64()
-        el.deref()
+    @classmethod
+    def operation(cls, sighash=None):
+        global GLOBAL_TX, GLOBAL_TX_INPUT_IDX, GLOBAL_TX_SCRIPT, GLOBAL_UTXOS
 
-    def finish(self):
-        if self.sighash is None: self.sighash = 0
+        if sighash is None:
+            sighash = 0
+        elif sighash.is_atom() and sighash.val1 == 1:
+            sighash = sighash.val2[0]
+        else:
+            return Error("bip342_txmsg: expects a single sighash byte")
+        if sighash not in [0x00, 0x01, 0x02, 0x03, 0x81, 0x82, 0x83]:
+            return Error("bip342_txmsg: unknown sighash byte")
+
+        if GLOBAL_TX is None:
+            return Error("bip342_txmsg: tx is not set")
+        if GLOBAL_TX_INPUT_IDX is None:
+            return Error("bip342_txmsg: tx input idx not set")
+        if GLOBAL_TX_SCRIPT is None:
+            return Error("bip342_txmsg: tx script not set")
+        if GLOBAL_UTXOS is None:
+            return Error("bip342_txmsg: utxos not set")
+
         annex = None
         if len(GLOBAL_TX.wit.vtxinwit) > 0:
             w = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
             if len(w) > 0 and w[-1][0] == 0x50:
                 annex = w[-1]
-        r = verystable.core.script.TaprootSignatureHash(txTo=GLOBAL_TX, spent_utxos=GLOBAL_UTXOS, hash_type=self.sighash, input_index=GLOBAL_TX_INPUT_IDX, scriptpath=True, annex=annex, script=GLOBAL_TX_SCRIPT)
+        r = verystable.core.script.TaprootSignatureHash(txTo=GLOBAL_TX, spent_utxos=GLOBAL_UTXOS, hash_type=sighash, input_index=GLOBAL_TX_INPUT_IDX, scriptpath=True, annex=annex, script=GLOBAL_TX_SCRIPT)
         return Atom(r)
 
+'''
 class op_tx(Operator):
     def __init__(self):
         # build up r as we go, by updating last_cons
@@ -965,7 +975,7 @@ FUNCS = [
 #  (0x28, "secp256k1_muladd", op_secp256k1_muladd),
 
 #  (0x29, "tx", op_tx),
-#  (0x2a, "bip342_txmsg", op_bip342_txmsg),
+  (0x2a, "bip342_txmsg", op_bip342_txmsg),
 
 #  ideas:
 #    (signextend 0x81 4) -> 0x01000080
