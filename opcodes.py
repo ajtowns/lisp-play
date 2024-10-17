@@ -10,7 +10,7 @@ import verystable.core.messages
 import verystable.core.script
 import verystable.core.secp256k1
 
-from element import Element, Atom, Cons, Error, Func, SerDeser, int_to_bytes
+from element import Element, Atom, Cons, Error, SerDeser, int_to_bytes
 
 def get_env(n, env):
     if n < 0:
@@ -94,8 +94,16 @@ class Opcode:
     @staticmethod
     def initial_state():
         return Atom(0)
-    def argument(self, state, arg): raise NotImplementedError
-    def finish(self, state): raise NotImplementedError
+
+    @staticmethod
+    def initial_int_state():
+        return None
+
+    @classmethod
+    def argument(cls, int_state, state, arg): raise NotImplementedError
+
+    @classmethod
+    def finish(cls, int_state, state): raise NotImplementedError
 
 class BinOpcode(Opcode):
     """For opcodes that are essentially binary operators"""
@@ -105,12 +113,14 @@ class BinOpcode(Opcode):
 
     @final
     @classmethod
-    def argument(cls, state, arg):
+    def argument(cls, int_state, state, arg):
+        assert int_state is None
         r = cls.binop(state, arg)
-        return Func(r, cls)
+        return (r, None)
 
     @staticmethod
-    def finish(state):
+    def finish(int_state, state):
+        assert int_state is None
         return state.bumpref()
 
 class FixOpcode(Opcode):
@@ -129,15 +139,17 @@ class FixOpcode(Opcode):
 
     @final
     @classmethod
-    def argument(cls, state, arg):
+    def argument(cls, int_state, state, arg):
+        assert int_state is None
         n, rest = cls.state_info(state)
         if n >= cls.max_args:
             return Error("too many arguments")
-        return Func(Cons(Cons(arg.bumpref(), rest.bumpref()), Atom(n+1)), cls)
+        return (Cons(Cons(arg.bumpref(), rest.bumpref()), Atom(n+1)), None)
 
     @final
     @classmethod
-    def finish(cls, state):
+    def finish(cls, int_state, state):
+        assert int_state is None
         n, rest = cls.state_info(state)
         if n < cls.min_args:
             return Error("too few arguments")
@@ -239,26 +251,21 @@ class op_i(FixOpcode):
             return t.bumpref() if t is not None else Atom(1)
 
 class IntStateOpcode(Opcode):
-    def __init__(self, int_state=None):
-        if int_state is None:
-            int_state = self.initial_int_state()
-        self.int_state = int_state
-
     @classmethod
-    def initial_int_state(cls):
-        return None
-
     @final
-    def argument(self, state, arg):
-        next_state = self.update_state(self.int_state, arg)
+    def argument(cls, int_state, state, arg):
+        assert state.is_nil()
+        next_state = cls.update_state(int_state, arg)
         if isinstance(next_state, Element):
             assert next_state.is_error()
-            return next_state
-        return Func(state.bumpref(), self.__class__(next_state))
+            return (next_state, None)
+        return (state.bumpref(), next_state)
 
+    @classmethod
     @final
-    def finish(self, state):
-       return self.final_state(self.int_state)
+    def finish(cls, int_state, state):
+       assert state.is_nil()
+       return cls.final_state(int_state)
 
     @classmethod
     def update_state(cls, int_state, arg):

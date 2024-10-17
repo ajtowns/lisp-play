@@ -268,11 +268,24 @@ class Cons(Pair):
 
 class Func(Pair):
     kind = FUNC
+    def __init__(self, fncls, intstate, state):
+        assert isinstance(fncls, type)
+        # XXX assert hasattr(fncls, "step") and hasattr(fncls, "feedback")
+        assert hasattr(fncls, "argument") and hasattr(fncls, "finish")
+        assert isinstance(state, Element)
+        super().__init__((fncls, intstate), state)
+
     def child_elements(self):
-        return [self.val1]
+        return [self.val2]
 
     def __str__(self):
-        return "FN(%s,%s)" % (self.val2.opcode_name(), str(self.val1))
+        if self.val1[1] is not None:
+            return "FN(%s,**,%s)" % (self.val1[0].__name__, self.val2[0])
+        else:
+            return "FN(%s,%s)" % (self.val1[0].__name__, self.val2[0])
+
+    def cls_intst_st(self):
+        return self.val1[0], self.val1[1], self.val2
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51

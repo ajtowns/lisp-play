@@ -38,7 +38,7 @@ def ResolveOpcode(opnum):
     else:
         op = Op_FUNCS.get(opnum, None)
         if op is None: return None
-        return fn_op(Func(op.initial_state(), op()))
+        return fn_op(op)
 
 ####
 
@@ -165,13 +165,8 @@ class FunctorNormal(Functor):
         raise NotImplementedError
 
 class fn_op(FunctorNormal):
-    @staticmethod
-    def _get_type(obj):
-        return obj if isinstance(obj, type) else type(obj)
-
-    def __init__(self, opcode):
-        assert isinstance(opcode, Element) and opcode.is_func()
-        self.op_func = opcode
+    def __init__(self, opcls):
+        self.op_func = Func(opcls, opcls.initial_int_state(), opcls.initial_state())
 
     def __repr__(self):
         return f"{self.op_func}"
@@ -181,7 +176,11 @@ class fn_op(FunctorNormal):
 
     def step_nil(self, workitem):
         cont = workitem.continuations[-1]
-        f = self.op_func.val2.finish(self.op_func.val1)
+        assert cont.fn is self
+
+        opcls, intst, st = self.op_func.cls_intst_st()
+        f = opcls.finish(intst, st)
+
         c = Continuation(fn=fn_fin(), args=f, env=cont.env.bumpref())
         workitem.popcont()
         workitem.continuations.append(c)
@@ -200,17 +199,16 @@ class fn_op(FunctorNormal):
         if not value.is_bll():
             workitem.error("cannot pass non-bll value to opcode")
 
-        nof = self.op_func.val2.argument(self.op_func.val1, value)
+        opcls, intst, st = self.op_func.cls_intst_st()
+        (newst, newintst) = opcls.argument(intst, st, value)
         value.deref()
-        if nof.is_error():
+        if newst.is_error():
             workitem.error(nof.val2)
             nof.deref()
             return
 
-        assert isinstance(nof, Element) and nof.is_func(), f"{nof} is not a func? {self.op_func}"
-        assert issubclass(self._get_type(nof.val2), Opcode)
         self.op_func.deref()
-        self.op_func = nof
+        self.op_func = Func(opcls, newintst, newst)
 
 class fn_apply(FunctorNormal):
     def __init__(self):

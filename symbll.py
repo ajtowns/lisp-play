@@ -146,7 +146,7 @@ def ResolveSymbol(localsyms, globalsyms, symname):
 
     if symname in SExpr_FUNCS:
         op = Op_FUNCS[SExpr_FUNCS[symname]]
-        return fn_op(Func(op.initial_state(), op()))
+        return fn_op(op)
 
     # locals override globals, but do not override builtins
     r = localsyms[symname]
@@ -240,8 +240,11 @@ class fn_eval(Functor):
                 cont.fn = fn_fin()
                 cont.args.deref()
                 cont.args = r
+            elif isinstance(r, fn_userfunc):
+                r.deref()
+                cont.fn = fn_fin() # pass the symbol back as-is
             elif isinstance(r, Functor):
-                workitem.error("opcode must be called")
+                workitem.error("opcode/function must be called")
                 r.deref()
             else:
                 workitem.error(f"BUG? symbol {cont.args}={r} isn't a functor or element")
@@ -250,13 +253,12 @@ class fn_eval(Functor):
             workitem.error("BUG? not sure what to eval")
 
 class fn_op(Functor):
+    def __init__(self, opcls):
+        self.op_func = Func(opcls, opcls.initial_int_state(), opcls.initial_state())
+
     @staticmethod
     def _get_type(obj):
         return obj if isinstance(obj, type) else type(obj)
-
-    def __init__(self, opcode):
-        assert isinstance(opcode, Element) and opcode.is_func()
-        self.op_func = opcode
 
     def __repr__(self):
         return f"{self.op_func}"
@@ -268,8 +270,10 @@ class fn_op(Functor):
         assert workitem.continuations
         assert workitem.continuations[-1].fn is self
         cont = workitem.continuations[-1]
+        assert cont.fn is self
         if cont.args.is_nil():
-            f = self.op_func.val2.finish(self.op_func.val1)
+            opcls, intst, st = self.op_func.cls_intst_st()
+            f = opcls.finish(intst, st)
             c = Continuation(fn=fn_fin(), args=f, localsyms=cont.localsyms.bumpref())
             workitem.popcont()
             workitem.continuations.append(c)
@@ -294,16 +298,16 @@ class fn_op(Functor):
         if not value.is_bll():
             workitem.error("cannot pass non-bll value to opcode")
 
-        nof = self.op_func.val2.argument(self.op_func.val1, value)
+        opcls, intst, st = self.op_func.cls_intst_st()
+        (newst, newintst) = opcls.argument(intst, st, value)
         value.deref()
-        assert isinstance(nof, Element)
-        if nof.is_error():
-            workitem.error(nof.val2)
-            nof.deref()
+        if newst.is_error():
+             workitem.error(nof.val2)
+             nof.deref()
+             return
         else:
-            assert nof.is_func() and issubclass(self._get_type(nof.val2), Opcode)
             self.op_func.deref()
-            self.op_func = nof
+            self.op_func = Func(opcls, newintst, newst)
 
 class fn_if(Functor):
     def step(self, workitem):
