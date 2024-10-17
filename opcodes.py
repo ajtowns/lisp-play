@@ -164,24 +164,24 @@ class op_add(BinOpcode):
         else:
             return Error("add requires atoms")
 
-class op_sub(Opcode):
+class op_sub(BinOpcode):
     @staticmethod
     def initial_state():
         return Cons(Atom(0), Atom(0))
 
     @classmethod
-    def argument(cls, state, arg):
-        if not arg.is_atom():
+    def binop(cls, left, right):
+        if not right.is_atom():
             return Error("sub requires atoms")
-        if state.is_cons() and state.val1.is_nil():
-            return Func(Cons(Atom(1), arg.bumpref()), op_sub)
-        elif state.is_cons():
-            return Func(Atom(state.val2.as_int() - arg.as_int()), op_sub)
+        if left.is_cons() and left.val1.is_nil():
+            return Cons(Atom(1), right.bumpref())
+        elif left.is_cons():
+            return Atom(left.val2.as_int() - right.as_int())
         else:
-            return Func(Atom(state.as_int() - arg.as_int()), op_sub)
+            return Atom(left.as_int() - right.as_int())
 
-    @classmethod
-    def finish(cls, state):
+    @staticmethod
+    def finish(state):
         if state.is_cons():
             return Atom(0 - state.val2.as_int())
         else:
@@ -240,40 +240,70 @@ class op_i(FixOpcode):
         else:
             return t.bumpref() if t is not None else Atom(1)
 
-class op_sha256(Opcode):
-    def __init__(self, hasher=None):
-        if hasher is None:
-            self.st = hashlib.sha256()
-        else:
-            self.st = hasher
+class IntStateOpcode(Opcode):
+    def __init__(self, int_state=None):
+        if int_state is None:
+            int_state = self.initial_int_state()
+        self.int_state = int_state
 
+    @classmethod
+    def initial_int_state(cls):
+        return None
+
+    @final
     def argument(self, state, arg):
-        if not arg.is_atom():
-            raise Exception("sha256: cannot hash list")
-        h = self.st.copy()
-        h.update(arg.val2)
-        return Func(state.bumpref(), self.__class__(h))
+        next_state = self.update_state(self.int_state, arg)
+        if isinstance(next_state, Element):
+            assert next_state.is_error()
+            return next_state
+        return Func(state.bumpref(), self.__class__(next_state))
 
+    @final
     def finish(self, state):
-        return Atom(self.st.digest())
+       return self.final_state(self.int_state)
+
+    @classmethod
+    def update_state(cls, int_state, arg):
+        raise NotImplementedError
+
+    @classmethod
+    def final_state(cls, int_state):
+        raise NotImplementedError
+
+class op_sha256(IntStateOpcode):
+    @classmethod
+    def initial_int_state(cls):
+        return hashlib.sha256()
+
+    @classmethod
+    def update_state(cls, int_state, arg):
+        if not arg.is_atom():
+            return Error("cannot hash list")
+        h = int_state.copy()
+        h.update(arg.val2)
+        return h
+
+    @classmethod
+    def final_state(cls, int_state):
+        return Atom(int_state.digest())
 
 class op_ripemd160(op_sha256):
-    def __init__(self, hasher=None):
-        if hasher is None:
-            self.st = hashlib.new("ripemd160")
-        else:
-            self.st = hasher
+    @classmethod
+    def initial_int_state(cls):
+        return hashlib.new("ripemd160")
 
 class op_hash160(op_sha256):
-    def finish(self, state):
+    @classmethod
+    def final_state(cls, int_state):
         x = hashlib.new("ripemd160")
-        x.update(self.st.digest())
+        x.update(int_state.digest())
         return Atom(x.digest())
 
 class op_hash256(op_sha256):
-    def finish(self, state):
+    @classmethod
+    def final_state(cls, int_state):
         x = hashlib.sha256()
-        x.update(self.st.digest())
+        x.update(int_state.digest())
         return Atom(x.digest())
 
 class op_rc(BinOpcode):
@@ -529,58 +559,6 @@ class op_lt_str(BinOpcode):
             return state.val1.bumpref()
 
 '''
-class op_nand_u64(Operator):
-    def __init__(self):
-        self.i = 0xFFFF_FFFF_FFFF_FFFF
-        self.state = 0
-
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("and: arguments must be atoms")
-        self.i &= el.atom_as_u64()
-        el.deref()
-
-    def finish(self):
-        return Atom(0xFFFF_FFFF_FFFF_FFFF ^ self.i)
-
-class op_and_u64(Operator):
-    def __init__(self):
-        self.i = 0xFFFF_FFFF_FFFF_FFFF
-        self.state = 0
-
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("and: arguments must be atoms")
-        self.i &= el.atom_as_u64()
-        el.deref()
-
-    def finish(self):
-        return Atom(self.i)
-
-class op_or_u64(Operator):
-    def __init__(self):
-        self.i = 0
-        self.state = 0
-
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("or: arguments must be atoms")
-        self.i |= el.atom_as_u64()
-        el.deref()
-
-    def finish(self):
-        return Atom(self.i)
-
-class op_xor_u64(Operator):
-    def __init__(self):
-        self.i = 0
-        self.state = 0
-
-    def argument(self, el):
-        if not el.is_atom(): raise Exception("xor: arguments must be atoms")
-        self.i ^= el.atom_as_u64()
-        el.deref()
-
-    def finish(self):
-        return Atom(self.i)
-
 # op_mod / op_divmod
 class op_div_u64(Operator):
     def __init__(self):
@@ -962,6 +940,7 @@ FUNCS = [
 #  (0x1c, "<<", op_lshift),
 #  (0x1d, ">>", op_rshift),
   (0x1e, "<", op_lt_num),   # not restricted to u64
+# 0x1f missing
 
   (0x20, "rd", op_list_read), # read bytes to Element
   (0x21, "wr", op_list_write), # write Element as bytes

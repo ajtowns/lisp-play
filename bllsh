@@ -116,11 +116,12 @@ class BTCLispRepl(cmd.Cmd):
     def show_state(self):
         if self.wi is None: return
         s = ""
-        for c in reversed(self.wi.continuations):
+        for ri, c in enumerate(reversed(self.wi.continuations)):
+            i = len(self.wi.continuations) - ri
             if hasattr(c, "localsyms"):
                 s = " ".join(f"{k}={v}" for k,v in c.localsyms.syms.items())
                 if s != "": s = f"    [{s}]"
-            print(f"   -- {c.fn}    {c.args}{s}")
+            print(f"   -- {i}. {c.fn}    {c.args}{s}")
 
     def default(self, line):
         if line.strip().startswith(";"):
@@ -274,6 +275,22 @@ class BTCLispRepl(cmd.Cmd):
 
         while not self.wi.finished():
             self.wi.step()
+
+        r = self.wi.get_result()
+        print(f"Result: {r}")
+        r.deref()
+        self.wi = None
+
+    @handle_exc
+    def do_trace(self, arg):
+        if self.wi is None:
+            print("No expression being debugged")
+            return
+
+        while not self.wi.finished():
+            self.wi.step()
+            self.show_state()
+            print("")
 
         r = self.wi.get_result()
         print(f"Result: {r}")

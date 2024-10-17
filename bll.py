@@ -50,7 +50,7 @@ def ToBLL(sexpr):
     if sexpr.is_symbol():
         a = OpAtom(sexpr.val2)
         if a is None:
-            return Error("unknown symbol")
+            return Error(f"unknown symbol {sexpr.val2}")
         else:
             return a
 
@@ -116,7 +116,7 @@ class fn_eval(Functor):
         cont = workitem.continuations[-1]
         assert cont.fn is self
         assert isinstance(cont.args, Element)
-        assert cont.args.is_bll()
+        assert cont.args.is_error() or cont.args.is_bll(), f"{cont.args} not bll"
         if cont.args.is_error():
             cont.fn = fn_fin()
             return cont.fn.step(workitem)
