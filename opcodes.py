@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import hashlib
+import struct
 import sys
 from typing import final
 
@@ -9,7 +10,7 @@ import verystable.core.messages
 import verystable.core.script
 import verystable.core.secp256k1
 
-from element import Element, Atom, Cons, Error, Func, SerDeser
+from element import Element, Atom, Cons, Error, Func, SerDeser, int_to_bytes
 
 def get_env(n, env):
     if n < 0:
@@ -146,15 +147,12 @@ class FixOpcode(Opcode):
             rest = rest.val2
         return cls.operation(*(args[::-1]))
 
-class op_x(Opcode):
-    # XXX perhaps should actually combine the args and include a message
+class op_x(FixOpcode):
+    min_args = 0
+    max_args = 10
     @classmethod
-    def argument(self, state, arg):
-        return Error("exception")
-
-    @classmethod
-    def finish(cls, state):
-        return Error("exception")
+    def operation(cls, *args):
+        return Error("Exception: {" ".join(str(a) for a in args)}")
 
 class op_add(BinOpcode):
     @classmethod
@@ -751,57 +749,47 @@ class op_bip342_txmsg(FixOpcode):
         r = verystable.core.script.TaprootSignatureHash(txTo=GLOBAL_TX, spent_utxos=GLOBAL_UTXOS, hash_type=sighash, input_index=GLOBAL_TX_INPUT_IDX, scriptpath=True, annex=annex, script=GLOBAL_TX_SCRIPT)
         return Atom(r)
 
-'''
-class op_tx(Operator):
-    def __init__(self):
-        # build up r as we go, by updating last_cons
-        self.r = None
-        self.last_cons = None
-
-    def resolve_spec(self):
-        # each arg should be either an atom, or a pair of atoms
-        return xATCO(xAT(), xAT())
-
-    def argspec(self, argspec):
-        if argspec.el.is_atom():
-            code = argspec.el.atom_as_u64()
+class op_tx(BinOpcode):
+    @classmethod
+    def binop(cls, left, right):
+        assert left.is_atom()
+        if right.is_atom():
+            code = right.as_int()
             which = None
+        elif right.is_cons() and right.val1.is_atom() and right.val2.is_atom():
+            code = right.val2.as_int()
+            which = right.val2.as_int()
         else:
-            code = argspec.left.el.atom_as_u64()
-            which = argspec.right.el.atom_as_u64()
-        result = self.get_tx_info(code, which)
-        if self.r is None:
-            self.r = result
-        elif self.last_cons is None:
-            # XXX should release this progressively like op_c
-            self.last_cons = Cons(result, Atom(0))
-            self.r = Cons(self.r, self.last_cons)
-        else:
-            assert self.last_cons.is_cons()
-            assert self.last_cons.val2.is_atom()
-            assert self.last_cons.val2.val2 == 0
-            self.last_cons.val2 = Cons(result, self.last_cons.val2)
-            self.last_cons = self.last_cons.val2
-        argspec.el.deref()
+            return Error("tx: bad argument")
 
-    def get_tx_info(self, code, which):
+        result = cls.get_tx_info(code, which)
+        if isinstance(result, Element):
+            return result
+        else:
+            assert isinstance(result, bytes)
+            return Atom(left.val2 + result)
+
+    @classmethod
+    def get_tx_info(cls, code, which):
         if 0 <= code <= 9:
-            if which is not None: raise Exception(f"tx: {code} should be an atom not a pair")
-            return self.get_tx_global_info(code)
+            if which is not None: return Error(f"tx: {code} should be an atom not a pair")
+            return cls.get_tx_global_info(code)
         elif 10 <= code <= 19:
             if which is None: which = GLOBAL_TX_INPUT_IDX
             if which < 0 or which >= len(GLOBAL_TX.vin):
-                raise Exception(f"tx: {code} invalid input index")
-            return self.get_tx_input_info(code, which)
+                return Error(f"tx: {code} has invalid input index {which}")
+            return cls.get_tx_input_info(code, which)
         elif 20 <= code <= 29:
             if which is None: which = GLOBAL_TX_INPUT_IDX
             if which < 0 or which >= len(GLOBAL_TX.vout):
-                raise Exception(f"tx: {code} requires valid output index")
-            return self.get_tx_output_info(code, which)
+                return Error(f"tx: {code} requires valid output index")
+            return cls.get_tx_output_info(code, which)
         else:
-            raise Exception(f"tx: {code} out of range")
+            return Error(f"tx: {code} out of range")
 
-    def get_bip341info(self):
+    @classmethod
+    def get_bip341info(cls):
+        # XXX currently unexposed
         wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
         n = len(wit) - 1
         if n > 0 and wit[n][0] == 0x50: n -= 1 # skip annex
@@ -817,19 +805,20 @@ class op_tx(Operator):
             ipk = path = None
         return leafver, sign, ipk, path
 
-    def get_tx_global_info(self, code):
+    @classmethod
+    def get_tx_global_info(cls, code):
         if code == 0:
-            return Atom(GLOBAL_TX.nVersion, 4)
+            return struct.pack("<i", GLOBAL_TX.nVersion)
         elif code == 1:
-            return Atom(GLOBAL_TX.nLockTime, 4)
+            return struct.pack("<I", GLOBAL_TX.nLockTime)
         elif code == 2:
-            return Atom(len(GLOBAL_TX.vin))
+            return int_to_bytes(len(GLOBAL_TX.vin))
         elif code == 3:
-            return Atom(len(GLOBAL_TX.vout))
+            return int_to_bytes(len(GLOBAL_TX.vout))
         elif code == 4:
-            return Atom(GLOBAL_TX_INPUT_IDX)
+            return int_to_bytes(GLOBAL_TX_INPUT_IDX)
         elif code == 5:
-            return Atom(GLOBAL_TX.serialize_without_witness())
+            return GLOBAL_TX.serialize_without_witness()
         elif code == 6:
             # the TapLeaf hash for the current script
             wit = GLOBAL_TX.wit.vtxinwit[GLOBAL_TX_INPUT_IDX].scriptWitness.stack
@@ -839,64 +828,55 @@ class op_tx(Operator):
                 v = (wit[n][0] & 0xFE)
                 s = wit[n-1]
                 h = verystable.core.key.TaggedHash("TapLeaf", bytes([v]) + verystable.core.messages.ser_string(s))
-                return Atom(h)
+                return h
             else:
-                return Atom(0)
+                return b''
         elif code == 7:
             # taproot internal pubkey
-            raise Exception("unimplemented")
+            raise Error("tx: code 7 unimplemented")
         elif code == 8:
             # taproot merkle path
-            raise Exception("unimplemented")
+            raise Error("tx: code 8 unimplemented")
         # should also be able to pull out control block information,
         # eg merkle path and internal pubkey
         else:
-            return Atom(0)
+            return b''
 
-    def get_tx_input_info(self, code, which):
+    @classmethod
+    def get_tx_input_info(cls, code, which):
         txin = GLOBAL_TX.vin[which]
         wit = GLOBAL_TX.wit.vtxinwit[which].scriptWitness.stack
         coin = GLOBAL_UTXOS[which]
         if code == 10:
-             return Atom(txin.nSequence, 4)
+             return struct.pack("<I", txin.nSequence)
         elif code == 11:
-             return Atom(verystable.core.messages.ser_uint256(txin.prevout.hash))
+             return verystable.core.messages.ser_uint256(txin.prevout.hash)
         elif code == 12:
-             return Atom(txin.prevout.n, 4)
+             return struct.pack("<I", txin.prevout.n)
         elif code == 13:
-             return Atom(txin.scriptSig)
+             return txin.scriptSig
         elif code == 14:
              # annex, including 0x50 prefix
              if len(wit) > 0 and len(wit[-1]) > 0 and wit[-1][0] == 0x50:
-                 return Atom(wit[-1])
+                 return wit[-1]
              else:
-                 return Atom(0)
+                 return b''
         elif code == 15:
-             return Atom(coin.nValue, 8)
+             return struct.pack("<Q", coin.nValue)
         elif code == 16:
-             return Atom(coin.scriptPubKey)
+             return coin.scriptPubKey
         else:
-             return Atom(0)
+             return b''
 
-    def get_tx_output_info(self, code, which):
+    @classmethod
+    def get_tx_output_info(cls, code, which):
         out = GLOBAL_TX.vout[which]
         if code == 20:
-             return Atom(out.nValue, 8)
+             return struct.pack("<Q", out.nValue)
         elif code == 21:
-             return Atom(out.scriptPubKey)
+             return out.scriptPubKey
         else:
-             return Element.Atom(0)
-
-    def finish(self):
-        if self.r is None: return Element.Atom(0)
-        r = self.r
-        self.r = None
-        return r
-
-    def abandon(self):
-        return [self.r] if self.r is not None else []
-
-'''
+             return b''
 
 FUNCS = [
 #  (b'', "q", None), # quoting indicator, special
@@ -953,7 +933,7 @@ FUNCS = [
   (0x27, "ecdsa_verify", op_ecdsa_verify),
 #  (0x28, "secp256k1_muladd", op_secp256k1_muladd),
 
-#  (0x29, "tx", op_tx),
+  (0x29, "tx", op_tx),
   (0x2a, "bip342_txmsg", op_bip342_txmsg),
 
 #  ideas:
