@@ -124,7 +124,7 @@ class BinOpcode(Opcode):
         return state.bumpref()
 
 class FixOpcode(Opcode):
-    min_args = max_args = None
+    min_args = max_args = -1
 
     @classmethod
     def operation(cls, *args):

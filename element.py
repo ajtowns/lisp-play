@@ -70,6 +70,8 @@ FUNC=251     # not bll, can be the result/input of partial?
 
 SYMBOL=250   # not bll
 
+UNDEF=-1
+
 def int_to_bytes(i):
     if i == 0:
         return b''
@@ -101,9 +103,9 @@ def bytes_to_int(b):
     return i
 
 class Element:
-    kind = None
+    kind = UNDEF
     def __init__(self, val1, val2):
-        assert self.kind is not None
+        assert self.kind != UNDEF
         if hasattr(self, "refcnt"): return
         self.refcnt = 1
         self.val1 = val1

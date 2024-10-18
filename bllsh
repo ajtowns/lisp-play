@@ -6,13 +6,14 @@ import os
 import sys
 import traceback
 
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, List, Any, Self
+
+readline : Optional[Any] = None
 try:
     import readline
 except ImportError:
-    readline = None
-
-from dataclasses import dataclass, field
-from typing import Optional, Tuple, List, Any, Self
+    pass
 
 from element import SExpr, Atom, ALLOCATOR
 from opcodes import Set_GLOBAL_TX, Get_GLOBAL_TX, Set_GLOBAL_TX_INPUT_IDX, Get_GLOBAL_TX_INPUT_IDX, Set_GLOBAL_TX_SCRIPT, Get_GLOBAL_TX_SCRIPT, Set_GLOBAL_UTXOS, Get_GLOBAL_UTXOS
