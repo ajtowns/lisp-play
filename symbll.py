@@ -167,10 +167,8 @@ class Functor:
     def feedback(self, workitem, value):
         # defaults to a no-op, discarding the passed in value
         value.deref()
-
     def deref(self):
         pass # deref any internal state
-
     def __repr__(self):
         return self.__class__.__name__
 

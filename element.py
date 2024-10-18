@@ -189,11 +189,6 @@ class Pair(Element):
     def child_elements(self):
         return [self.val1, self.val2]
 
-    def steal_children(self):
-        r = (self.val1.bumpref(), self.val2.bumpref())
-        self.deref()
-        return r
-
 class Atom(Store):
     kind = ATOM
 
@@ -251,6 +246,11 @@ class Cons(Pair):
             self.kind = SYMCONS
         super().__init__(left, right)
 
+    def steal_children(self):
+        r = (self.val1.bumpref(), self.val2.bumpref())
+        self.deref()
+        return r
+
     def __str__(self):
         bll = self.is_bll()
         x = []
@@ -278,14 +278,19 @@ class Func(Pair):
     def child_elements(self):
         return [self.val2]
 
+    def steal_cls_istate_state(self):
+        r = (self.val1[0], self.val1[1], self.val2.bumpref())
+        self.deref()
+        return r
+
+    def cls_intst_st(self):
+        return self.val1[0], self.val1[1], self.val2
+
     def __str__(self):
         if self.val1[1] is not None:
             return "FN(%s,**,%s)" % (self.val1[0].__name__, self.val2[0])
         else:
             return "FN(%s,%s)" % (self.val1[0].__name__, self.val2[0])
-
-    def cls_intst_st(self):
-        return self.val1[0], self.val1[1], self.val2
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51
