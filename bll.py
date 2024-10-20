@@ -6,7 +6,7 @@ import abc
 import functools
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Any
+from typing import Type, List, Optional, Any
 
 from element import Element, SExpr, Atom, Cons, Error, Func, FuncClass
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
@@ -95,38 +95,42 @@ def ToBLL(sexpr : Element) -> Element:
 @FuncClass.implements_API
 class fn_fin(FuncClass):
     @classmethod
-    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
-        assert intstate is None and state.is_nil()
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert state.is_nil()
         Element.deref_all(state, env)
         workitem.feedback(args)
 
 @FuncClass.implements_API
 class fn_quote(FuncClass):
     @classmethod
-    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
-        assert intstate is None and state.is_nil()
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert state.is_nil()
         Element.deref_all(state, env)
         workitem.feedback(args)
 
 @FuncClass.implements_API
-class fn_op(FuncClass):
-    @classmethod
-    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
-        opcls, opintstate = intstate
+class fn_op():
+    def __init__(self, opcls : Type[Opcode], opintstate):
+        self.opcls = opcls
+        self.opintstate = opintstate
+
+    def __repr__(self):
+        return self.opcls.__name__
+
+    def step(self, state : Element, args : Element, env : Any, workitem : Any) -> None:
         if args.is_nil():
-            f = opcls.finish(opintstate, state)  # XXX should consider state owned
+            f = self.opcls.finish(self.opintstate, state)  # XXX should consider state owned
             Element.deref_all(state, args, env)
             workitem.fin_value(f)
         elif isinstance(args, Cons):
             arg, rest = args.steal_children()
-            workitem.new_continuation(Func(cls, intstate, state), rest, env)
+            workitem.new_continuation(Func(self.__class__, (self.opcls, self.opintstate), state), rest, env)
             workitem.eval_arg(arg, env.bumpref())
         else:
             Element.deref_all(state, args, env)
             workitem.error("argument to opcode is improper list")
 
-    @classmethod
-    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+    def feedback(self, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
         assert not isinstance(value, Error)
 
         if not value.is_bll():
@@ -134,21 +138,20 @@ class fn_op(FuncClass):
             Element.deref_all(state, value, args, env)
             return
 
-        opcls, opintst = intstate
-        (newst, newintst) = opcls.argument(opintst, state, value) # XXX state/value owned
+        (newst, newintst) = self.opcls.argument(self.opintstate, state, value) # XXX state/value owned
         Element.deref_all(state, value)
 
         if isinstance(newst, Error):
             workitem.fin_value(newst)
             Element.deref_all(args, env)
         else:
-            workitem.new_continuation(Func(cls, (opcls, newintst), newst), args, env)
+            workitem.new_continuation(Func(self.__class__, (self.opcls, newintst), newst), args, env)
 
 @FuncClass.implements_API
 class fn_blleval(FuncClass):
     @classmethod
-    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
-        assert intstate is None and state.is_nil()
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert state.is_nil()
         state.deref()
 
         if not isinstance(args, Error) and not args.is_bll():
@@ -184,15 +187,14 @@ class fn_blleval(FuncClass):
             workitem.error("BUG? should be unreachable")
 
 @FuncClass.implements_API
-class fn_apply(FuncClass):
+class fn_apply():
     # state structure:
     #   0 args: nil
     #   1 arg: Cons( nil, APPLY )
     #   2 args: Cons( 1, Cons( ENV, APPLY ) )
 
     @classmethod
-    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
-        assert intstate is None
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
         if args.is_nil():
             args.deref()
             if not isinstance(state, Cons):
@@ -213,14 +215,13 @@ class fn_apply(FuncClass):
             workitem.eval_arg(apply_expr, apply_env)
         elif isinstance(args, Cons):
             arg, rest = args.steal_children()
-            workitem.new_continuation(Func(cls, intstate, state), rest, env)
+            workitem.new_continuation(Func(cls, None, state), rest, env)
             workitem.eval_arg(arg, env.bumpref())
         else:
             workitem.error("argument to opcode is improper list")
 
     @classmethod
-    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
-        assert intstate is None
+    def feedback(cls, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
         assert not isinstance(value, Error)
 
         if not value.is_bll():
@@ -237,11 +238,11 @@ class fn_apply(FuncClass):
                 left.deref()
                 newst = Cons(Atom(1), Cons(value, apply_el))
             else:
-                Element.deref_all(left, apply_el, vlaue, args, env)
+                Element.deref_all(left, apply_el, value, args, env)
                 workitem.error("too many args to apply")
                 return
 
-        workitem.new_continuation(Func(cls, intstate, newst), args, env)
+        workitem.new_continuation(Func(cls, None, newst), args, env)
 
 @dataclass
 class Continuation:
@@ -277,20 +278,21 @@ class WorkItem:
     def error(self, msg : str) -> None:
         self.fin_value(Error(msg))
 
+    def step(self) -> None:
+        c = self.continuations.pop()
+        fnobj, state = c.fn.steal_func()
+        fnobj.step(state, c.args, c.env, self)
+
     def feedback(self, value : Element) -> None:
         if isinstance(value, Error):
             for c in self.continuations:
                 c.deref()
             self.continuations = []
-        elif not value.is_bll():
-            workitem.error(f"cannot quote non-bll expression {value}")
-            value.deref()
-            return
 
         if self.continuations:
             c = self.continuations.pop()
-            fncls, intstate, state = c.fn.steal_cls_istate_state()
-            fncls.feedback(intstate, state, value, c.args, c.env, self)
+            fnobj, state = c.fn.steal_func()
+            fnobj.feedback(state, value, c.args, c.env, self)
         else:
             self.fin_value(value)
 
@@ -302,11 +304,6 @@ class WorkItem:
         r = self.continuations[0].args.bumpref()
         self.continuations.pop().deref()
         return r
-
-    def step(self) -> None:
-        cont = self.continuations.pop()
-        fncls, intstate, state = cont.fn.steal_cls_istate_state()
-        fncls.step(intstate, state, cont.args, cont.env, self)
 
 def eval(sexpr : Element, globalenv : Element) -> Element:
     wi = WorkItem.begin(sexpr, globalenv)

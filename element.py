@@ -295,19 +295,17 @@ class Cons(Pair):
 
 class FuncClass:
     class API(Protocol):
-        @classmethod
-        def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
-            raise NotImplementedError
+        def step(self, state : Element, args : Element, env : Any, workitem : Any) -> None:
+            pass
 
-        @classmethod
-        def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
-            raise NotImplementedError
+        def feedback(self, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+            pass
 
     # default behaviour
     @classmethod
-    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+    def feedback(cls, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
         value.deref()
-        workitem.new_child(Func(cls, intstate, state), args, env)
+        workitem.new_child(Func(cls, None, state), args, env)
 
     @staticmethod
     def implements_API(cls : Type[API]) -> Type[API]:
@@ -317,7 +315,6 @@ class Func(Pair):
     kind = FUNC
     def __init__(self, fncls, intstate, state):
         assert isinstance(fncls, type)
-        assert issubclass(fncls, FuncClass) or (hasattr(fncls, "argument") and hasattr(fncls, "finish")) # XXX
         assert isinstance(state, Element)
         super().__init__((fncls, intstate), state)
 
@@ -329,6 +326,18 @@ class Func(Pair):
         self.deref()
         return r
 
+    def steal_func(self):
+        cls, intstate = self.val1
+        state = self.val2.bumpref()
+        self.deref()
+        if intstate is None:
+            obj = cls()
+        elif isinstance(intstate, (list, tuple)):
+            obj = cls(*intstate)
+        else:
+            obj = cls(intstate)
+        return obj, state
+
     def cls_intst_st(self):
         return self.val1[0], self.val1[1], self.val2
 
@@ -337,6 +346,7 @@ class Func(Pair):
             return "FN(%s,**,%s)" % (self.val1[0].__name__, self.val2)
         else:
             return "FN(%s,%s)" % (self.val1[0].__name__, self.val2)
+
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51
