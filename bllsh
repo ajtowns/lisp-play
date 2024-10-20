@@ -175,7 +175,6 @@ class BTCLispRepl(cmd.Cmd):
 
         print(r)
         r.deref()
-        env.deref()
         print(f"allocation: {before} -> {ALLOCATOR.x}")
         if before < ALLOCATOR.x:
             print("allocated:")
@@ -189,7 +188,6 @@ class BTCLispRepl(cmd.Cmd):
             return
         prog, env = self.bllparse(arg)
         self.wi = bll.WorkItem.begin(prog, env)
-        env.deref()
         self.show_state()
 
     @handle_exc

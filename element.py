@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+import os.path
 import re
 import sys
+from typing import Protocol, Type, Any
 
 class Allocator:
     """simple object to monitor how much space is used up by
@@ -57,6 +59,17 @@ class Allocator:
         #self.freed[w] = self.allocated[w]
         del self.allocated[w]
 
+def DEBUG_LINE_INFO():
+    frame = sys._getframe(2)
+    r = []
+    while frame is not None:
+        fname = frame.f_code.co_filename
+        if "btclisp" in fname:
+            fname = os.path.basename(fname)
+            r.append(f'{fname}:{frame.f_lineno}')
+        frame = frame.f_back
+    return " ".join(r)
+
 ALLOCATOR = Allocator()
 
 # kinds
@@ -72,7 +85,7 @@ SYMBOL=250   # not bll
 
 UNDEF=-1
 
-def int_to_bytes(i):
+def int_to_bytes(i : int) -> bytes:
     if i == 0:
         return b''
     neg = (i < 0)
@@ -90,7 +103,7 @@ def int_to_bytes(i):
         b += bytes([d])
     return b
 
-def bytes_to_int(b):
+def bytes_to_int(b : bytes) -> int:
     if b == b'':
         return 0
     i, m = 0, 1
@@ -121,25 +134,28 @@ class Element:
     @staticmethod
     def deref_add_to_stack(stk, els):
         for el in els:
-            assert el.refcnt > 0, f"{el} already freed"
-            el.refcnt -= 1
-            if el.refcnt <= 0:
+            assert el.refcnt > 0, f"already freed {el}"
+            if el.refcnt <= 1:
                 stk.append(el)
+            else:
+                el.refcnt -= 1
         return stk
 
     @classmethod
     def deref_stack(cls, stk):
         while stk:
             el = stk.pop()
-            assert el.refcnt == 0
+            assert el.refcnt == 1
             cls.deref_add_to_stack(stk, el.child_elements())
+            el.refcnt = 0
             ALLOCATOR.free(el.alloc_size(), el)
 
     def deref(self):
+        assert self.refcnt > 0, f"already freed {self}"
         self.deref_stack(self.deref_add_to_stack([], [self]))
 
     def bumpref(self):
-        assert self.refcnt > 0
+        assert self.refcnt > 0, f"already freed {self}"
         self.refcnt += 1
         return self
 
@@ -219,10 +235,16 @@ class Atom(Store):
             value = int_to_bytes(value)
         super().__init__(value)
 
+    def simplenum(self):
+        if self.val1 > 4: return False
+        if self.val1 == 0: return True
+        if self.val1 >= 2 and (self.val2[-1] == 0x00 or self.val2[-1] == 0x80) and self.val2[-2] < 0x80: return False
+        return True
+
     def __str__(self):
         if self.val1 == 0:
             return "nil"
-        elif self.val1 < 3 and self.val2[-1] != 0 and self.val2[-1] != 0x80:
+        elif self.simplenum():
             return "%d" % self.as_int()
         else:
             return "0x%s" % (self.val2.hex(),)
@@ -268,12 +290,31 @@ class Cons(Pair):
         else:
             return "[%s]" % " ".join(map(str, x))
 
+class FuncClass:
+    class API(Protocol):
+        @classmethod
+        def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
+            raise NotImplementedError
+
+        @classmethod
+        def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+            raise NotImplementedError
+
+    # default behaviour
+    @classmethod
+    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+        value.deref()
+        workitem.new_child(Func(cls, intstate, state), args, env)
+
+    @staticmethod
+    def implements_API(cls : Type[API]) -> Type[API]:
+        return cls
+
 class Func(Pair):
     kind = FUNC
     def __init__(self, fncls, intstate, state):
         assert isinstance(fncls, type)
-        # XXX assert hasattr(fncls, "step") and hasattr(fncls, "feedback")
-        assert hasattr(fncls, "argument") and hasattr(fncls, "finish")
+        assert issubclass(fncls, FuncClass) or (hasattr(fncls, "argument") and hasattr(fncls, "finish")) # XXX
         assert isinstance(state, Element)
         super().__init__((fncls, intstate), state)
 
@@ -290,9 +331,9 @@ class Func(Pair):
 
     def __str__(self):
         if self.val1[1] is not None:
-            return "FN(%s,**,%s)" % (self.val1[0].__name__, self.val2[0])
+            return "FN(%s,**,%s)" % (self.val1[0].__name__, self.val2)
         else:
-            return "FN(%s,%s)" % (self.val1[0].__name__, self.val2[0])
+            return "FN(%s,%s)" % (self.val1[0].__name__, self.val2)
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51

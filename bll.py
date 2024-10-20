@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import abc
 import functools
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Any
 
-from element import Element, SExpr, Atom, Cons, Error, Func
+from element import Element, SExpr, Atom, Cons, Error, Func, FuncClass
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 
 ####
@@ -18,7 +20,7 @@ SpecialBLLOps = {
     'partial': 3,
 }
 
-def OpAtom(opcode):
+def OpAtom(opcode : str) -> Optional[Atom]:
     if opcode in SpecialBLLOps:
         return Atom(SpecialBLLOps[opcode])
     elif opcode in SExpr_FUNCS:
@@ -26,25 +28,45 @@ def OpAtom(opcode):
     else:
         return None
 
-def ResolveOpcode(opnum):
+def ResolveOpcode(op : Element) -> Optional[Func]:
+    if not isinstance(op, Atom):
+        return None
+    opnum = op.as_int()
     if opnum == 0:
-        return fn_quote()
+        return Func(fn_quote, None, Atom(0))
     elif opnum == 1:
-        return fn_apply()
+        return Func(fn_apply, None, Atom(0))
     #elif opnum == 2:
     #    return fn_softfork()
     #elif opnum == 3:
     #    return fn_partial()
     else:
-        op = Op_FUNCS.get(opnum, None)
-        if op is None: return None
-        return fn_op(op)
+        opcls = Op_FUNCS.get(opnum, None)
+        if opcls is None: return None
+        return Func(fn_op, (opcls, opcls.initial_int_state()), opcls.initial_state())
+
+def ResolveEnv(baseenv : Element, idx : int) -> Element:
+    idxstart = idx
+    env = baseenv
+    while idx > 1:
+        if not isinstance(env, Cons):
+            env.deref()
+            return Error(f"invalid env reference {idxstart} : {baseenv}")
+        left, right = env.steal_children()
+        if idx % 2 == 0:
+            env = left
+            right.deref()
+        else:
+            env = right
+            left.deref()
+        idx //= 2
+    return env
 
 ####
 
-def ToBLL(sexpr):
+def ToBLL(sexpr : Element) -> Element:
     assert isinstance(sexpr, Element)
-    if sexpr.is_bll() or sexpr.is_error():
+    if sexpr.is_bll() or isinstance(sexpr, Error):
         return sexpr.bumpref()
 
     if sexpr.is_symbol():
@@ -54,227 +76,200 @@ def ToBLL(sexpr):
         else:
             return a
 
-    if sexpr.is_cons():
+    if isinstance(sexpr, Cons):
         v1 = ToBLL(sexpr.val1)
-        if v1.is_error():
+        if isinstance(v1, Error):
             return v1
         v2 = ToBLL(sexpr.val2)
-        if v2.is_error():
+        if isinstance(v2, Error):
             v1.deref()
             return v2
         return Cons(v1, v2)
 
-    return Error("could not convert to bll")
+    return Error("cannot convert to bll")
 
 #### evaluation model = workitem with continuations
 
-class Functor:
-    def step(self, workitem): raise NotImplementedError
-    def feedback(self, workitem, value):
-        # defaults to a no-op, discarding the passed in value
-        value.deref()
+@FuncClass.implements_API
+class fn_fin(FuncClass):
+    @classmethod
+    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert intstate is None and state.is_nil()
+        state.deref()
+        env.deref()
+        workitem.feedback(args)
 
-    def deref(self):
-        pass # deref any internal state
-
-    def __repr__(self):
-        return self.__class__.__name__
-
-class fn_fin(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        assert workitem.continuations[-1].fn is self
-        if len(workitem.continuations) == 1:
-            return
-        cont = workitem.continuations[-1]
-        if cont.args.is_error():
-            workitem.continuations.pop()
-            while workitem.continuations:
-                workitem.popcont()
-            workitem.continuations.append(cont)
-            return
-        v = cont.args.bumpref()
-        workitem.popcont()
-        pcont = workitem.continuations[-1]
-        pcont.fn.feedback(workitem, v)
-
-class fn_quote(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-        assert isinstance(cont.args, Element)
-        if cont.args.is_bll():
-            cont.fn = fn_fin()
-            return cont.fn.step(workitem)
+@FuncClass.implements_API
+class fn_quote(FuncClass):
+    @classmethod
+    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert intstate is None and state.is_nil()
+        state.deref()
+        env.deref()
+        if args.is_bll():
+            workitem.feedback(args)
         else:
+            args.deref()
             workitem.error("cannot quote non-bll expression")
 
-class fn_eval(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-        assert isinstance(cont.args, Element)
-        assert cont.args.is_error() or cont.args.is_bll(), f"{cont.args} not bll"
-        if cont.args.is_error():
-            cont.fn = fn_fin()
-            return cont.fn.step(workitem)
-        elif cont.args.is_atom():
-            v = cont.args.as_int()
+@FuncClass.implements_API
+class fn_blleval(FuncClass):
+    @classmethod
+    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert intstate is None and state.is_nil()
+        state.deref()
+
+        if not isinstance(args, Error) and not args.is_bll():
+            # XXX should handle partial funcs here i guess?
+            workitem.error(f"tried to eval something weird {args}")
+            args.deref()
+            env.deref()
+            return
+
+        if isinstance(args, Error):
+            env.deref()
+            workitem.fin_value(args)
+        elif isinstance(args, Atom):
+            v = args.as_int()
             if v >= 1:
-                envarg = cont.ResolveEnv(v)
-                cont.args.deref()
-                cont.args = envarg
-            cont.fn = fn_fin()
-        elif cont.args.is_cons():
-            op, cont.args = cont.args.steal_children()
-            opcode = op.as_int() if op.is_atom() else None
+                envarg = ResolveEnv(env, v)
+                args.deref()
+            else:
+                envarg = args
+                env.deref()
+            workitem.fin_value(envarg)
+        elif isinstance(args, Cons):
+            op, args = args.steal_children()
+            opfunc = ResolveOpcode(op)
             op.deref()
-            opfn = ResolveOpcode(opcode)
-            if opfn is None:
+            if opfunc is None:
+                args.deref()
+                env.deref()
                 workitem.error("invalid opcode")
             else:
-                assert isinstance(opfn, Functor)
-                cont.fn = opfn
-        elif cont.args.is_func():
-            # not sure?
-            workitem.error("BUG? expression with raw function??")
+                workitem.new_continuation(opfunc, args, env)
         else:
             # internal error
-            workitem.error("BUG? not sure what to eval")
+            args.deref()
+            env.deref()
+            workitem.error("BUG? should be unreachable")
 
-class FunctorNormal(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        assert workitem.continuations[-1].fn is self
-        cont = workitem.continuations[-1]
-        if cont.args.is_nil():
-            self.step_nil(workitem)
-        elif cont.args.is_cons():
-            w, cont.args = cont.args.steal_children()
-            c = Continuation(fn=fn_eval(), args=w, env=cont.env.bumpref())
-            workitem.continuations.append(c)
+@FuncClass.implements_API
+class fn_op(FuncClass):
+    @classmethod
+    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        opcls, opintstate = intstate
+        if args.is_nil():
+            args.deref()
+            env.deref()
+            f = opcls.finish(opintstate, state)  # XXX should consider state owned
+            state.deref()
+            workitem.fin_value(f)
+        elif isinstance(args, Cons):
+            arg, rest = args.steal_children()
+            workitem.new_continuation(Func(cls, intstate, state), rest, env)
+            workitem.eval_arg(arg, env.bumpref())
+        else:
+            state.deref()
+            args.deref()
+            env.deref()
+            workitem.error("argument to opcode is improper list")
+
+    @classmethod
+    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert not isinstance(value, Error)
+
+        if not value.is_bll():
+            workitem.error(f"cannot pass non-bll value {value} to opcode")
+            state.deref()
+            value.deref()
+            args.deref()
+            env.deref()
+            return
+
+        opcls, opintst = intstate
+        (newst, newintst) = opcls.argument(opintst, state, value) # XXX state/value owned
+        state.deref()
+        value.deref()
+
+        if isinstance(newst, Error):
+            workitem.fin_value(newst)
+            args.deref()
+            env.deref()
+        else:
+            workitem.new_continuation(Func(cls, (opcls, newintst), newst), args, env)
+
+@FuncClass.implements_API
+class fn_apply(FuncClass):
+    # state structure:
+    #   0 args: nil
+    #   1 arg: Cons( nil, APPLY )
+    #   2 args: Cons( 1, Cons( ENV, APPLY ) )
+
+    @classmethod
+    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert intstate is None
+        if args.is_nil():
+            args.deref()
+            if not isinstance(state, Cons):
+                assert state.is_nil()
+                apply_expr = state
+                apply_env = env
+            else:
+                i, info = state.steal_children()
+                if i.is_nil():
+                    i.deref()
+                    apply_expr = info
+                    apply_env = env
+                else:
+                    assert isinstance(info, Cons)
+                    assert i.is_atom() and i.val2 == b'\x01'
+                    i.deref()
+                    env.deref()
+                    apply_env, apply_expr = info.steal_children()
+            workitem.eval_arg(apply_expr, apply_env)
+        elif isinstance(args, Cons):
+            arg, rest = args.steal_children()
+            workitem.new_continuation(Func(cls, intstate, state), rest, env)
+            workitem.eval_arg(arg, env.bumpref())
         else:
             workitem.error("argument to opcode is improper list")
 
-    def step_nil(self, workitem):
-        raise NotImplementedError
+    @classmethod
+    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert intstate is None
+        assert not isinstance(value, Error)
 
-    def feedback(self, workitem, value):
-        raise NotImplementedError
-
-class fn_op(FunctorNormal):
-    def __init__(self, opcls):
-        self.op_func = Func(opcls, opcls.initial_int_state(), opcls.initial_state())
-
-    def __repr__(self):
-        return f"{self.op_func}"
-
-    def deref(self):
-        self.op_func.deref()
-
-    def step_nil(self, workitem):
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-
-        opcls, intst, st = self.op_func.cls_intst_st()
-        f = opcls.finish(intst, st)
-
-        c = Continuation(fn=fn_fin(), args=f, env=cont.env.bumpref())
-        workitem.popcont()
-        workitem.continuations.append(c)
-
-    def feedback(self, workitem, value):
-        assert workitem.continuations
-        assert workitem.continuations[-1].fn is self
-        assert isinstance(value, Element)
-
-        if value.is_error():
-            cont = workitem.continuations[-1]
-            cont.args.deref()
-            cont.fn = fn_fin()
-            cont.args = value
-            return
         if not value.is_bll():
-            workitem.error("cannot pass non-bll value to opcode")
-
-        opcls, intst, st = self.op_func.cls_intst_st()
-        (newst, newintst) = opcls.argument(intst, st, value)
-        value.deref()
-        if newst.is_error():
-            workitem.error(nof.val2)
-            nof.deref()
-            return
-
-        self.op_func.deref()
-        self.op_func = Func(opcls, newintst, newst)
-
-class fn_apply(FunctorNormal):
-    def __init__(self):
-        self.args = None
-        self.env = None
-
-    def __repr__(self):
-        if self.args is None:
-            return f"apply()"
-        elif self.env is None:
-            return f"apply({self.args})"
-        else:
-            return f"apply({self.args}; {self.env})"
-
-    def deref(self):
-        if self.args: self.args.deref()
-        if self.env: self.env.deref()
-
-    def step_nil(self, workitem):
-        cont = workitem.continuations[-1]
-        if self.args is None:
-            workitem.error("too few args to apply")
-            return
-        env = cont.env if self.env is None else self.env
-        c = Continuation(fn=fn_eval(), args=self.args.bumpref(), env=env.bumpref())
-        workitem.popcont()
-        workitem.continuations.append(c)
-
-    def feedback(self, workitem, value):
-        assert workitem.continuations
-        assert workitem.continuations[-1].fn is self
-        assert isinstance(value, Element)
-
-        if value.is_error():
-            cont = workitem.continuations[-1]
-            cont.args.deref()
-            cont.fn = fn_fin()
-            cont.args = value
-            return
-
-        if self.args is None:
-            self.args = value
-        elif self.env is None:
-            self.env = value
-        else:
+            workitem.error(f"cannot pass non-bll value {value} to apply")
+            state.deref()
             value.deref()
-            workitem.error("too many args to apply")
+            return
+
+        if not isinstance(state, Cons):
+            assert state.is_nil()
+            newst = Cons(state, value)
+        else:
+            left, apply_el = state.steal_children()
+            if left.is_nil():
+                left.deref()
+                newst = Cons(Atom(1), Cons(value, apply_el))
+            else:
+                left.deref()
+                apply_el.deref()
+                value.deref()
+                args.deref()
+                env.deref()
+                workitem.error("too many args to apply")
+                return
+
+        workitem.new_continuation(Func(cls, intstate, newst), args, env)
 
 @dataclass
 class Continuation:
-    fn: Functor
+    fn: Func
     args: Element           # (remaining) arguments to fn
     env: Element
-
-    def ResolveEnv(self, idx):
-        idxstart = idx
-        env = self.env
-        while idx > 1:
-            if not env.is_cons():
-                return Error(f"invalid env reference {idxstart} : {self.env}")
-            if idx % 2 == 0:
-                env = env.val1
-            else:
-                env = env.val2
-            idx //= 2
-        return env.bumpref()
 
     def __repr__(self):
         return f"Continuation({self.fn}, {self.args})"
@@ -289,34 +284,51 @@ class WorkItem:
     continuations: List[Continuation]
 
     @classmethod
-    def begin(cls, sexpr, env):
-        wi = WorkItem(continuations=[
-            Continuation(fn=fn_eval(), args=sexpr, env=env.bumpref())
-        ])
+    def begin(cls, sexpr : Element, env : Element) -> WorkItem:
+        wi = WorkItem(continuations=[])
+        wi.eval_arg(sexpr, env)
         return wi
 
-    def error(self, msg):
-        c = Continuation(fn=fn_fin(), args=Error(msg), env=Atom(0))
-        self.popcont()
-        self.continuations.append(c)
+    def new_continuation(self, fn : Func, args : Element, env : Element) -> None:
+        self.continuations.append(Continuation(fn, args, env))
 
-    def popcont(self):
-        last = self.continuations.pop()
-        last.deref()
+    def fin_value(self, value : Element) -> None:
+        self.new_continuation(Func(fn_fin, None, Atom(0)), value, Atom(0))
 
-    def finished(self):
-        return isinstance(self.continuations[0].fn, fn_fin)
+    def eval_arg(self, args : Element, env : Element) -> None:
+        self.new_continuation(Func(fn_blleval, None, Atom(0)), args, env)
 
-    def get_result(self):
+    def error(self, msg : str) -> None:
+        self.fin_value(Error(msg))
+
+    def feedback(self, value : Element) -> None:
+        if isinstance(value, Error):
+            for c in self.continuations:
+                c.deref()
+            self.continuations = []
+
+        if self.continuations:
+            c = self.continuations.pop()
+            fncls, intstate, state = c.fn.steal_cls_istate_state()
+            fncls.feedback(intstate, state, value, c.args, c.env, self)
+        else:
+            self.fin_value(value)
+
+    def finished(self) -> bool:
+        return len(self.continuations) == 1 and self.continuations[0].fn.val1[0] == fn_fin
+
+    def get_result(self) -> Element:
         assert self.finished()
         r = self.continuations[0].args.bumpref()
-        self.popcont()
+        self.continuations.pop().deref()
         return r
 
-    def step(self):
-        cont = self.continuations[-1].fn.step(self)
+    def step(self) -> None:
+        cont = self.continuations.pop()
+        fncls, intstate, state = cont.fn.steal_cls_istate_state()
+        fncls.step(intstate, state, cont.args, cont.env, self)
 
-def eval(sexpr, globalenv):
+def eval(sexpr : Element, globalenv : Element) -> Element:
     wi = WorkItem.begin(sexpr, globalenv)
 
     while not wi.finished():

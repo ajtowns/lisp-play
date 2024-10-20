@@ -191,7 +191,7 @@ class op_sub(BinOpcode):
             return Atom(left.as_int() - right.as_int())
 
     @staticmethod
-    def finish(state):
+    def finish(intstate, state):
         if state.is_cons():
             return Atom(0 - state.val2.as_int())
         else:
@@ -233,7 +233,7 @@ class op_lt_num(BinOpcode):
         return Cons(Atom(1), right.bumpref())
 
     @staticmethod
-    def finish(state):
+    def finish(intstate, state):
         if state.is_atom():
             return state.bumpref()
         else:
@@ -320,7 +320,7 @@ class op_rc(BinOpcode):
             return Cons(left.bumpref(), right.bumpref())
 
     @classmethod
-    def finish(cls, state):
+    def finish(cls, intstate, state):
         if state.is_cons():
             return state.val2.bumpref()
         else:
@@ -345,7 +345,7 @@ class op_b(BinOpcode):
             return Cons(Cons(v, m.bumpref()), Atom(n_next))
 
     @classmethod
-    def finish(cls, state):
+    def finish(cls, intstate, state):
         if state.is_nil():
             return state.bumpref()
         else:
@@ -490,7 +490,7 @@ class op_eq(BinOpcode):
                 return left.bumpref()
 
     @staticmethod
-    def finish(state):
+    def finish(intstate, state):
         if state.is_cons():
             return state.val2.bumpref()
         else:
@@ -557,7 +557,7 @@ class op_lt_str(BinOpcode):
         return Cons(Atom(1), right.bumpref())
 
     @staticmethod
-    def finish(state):
+    def finish(intstate, state):
         if state.is_atom():
             return state.bumpref()
         else:
