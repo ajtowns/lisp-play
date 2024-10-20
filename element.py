@@ -151,8 +151,11 @@ class Element:
             ALLOCATOR.free(el.alloc_size(), el)
 
     def deref(self):
-        assert self.refcnt > 0, f"already freed {self}"
         self.deref_stack(self.deref_add_to_stack([], [self]))
+
+    @classmethod
+    def deref_all(self, *els):
+        self.deref_stack(self.deref_add_to_stack([], els))
 
     def bumpref(self):
         assert self.refcnt > 0, f"already freed {self}"

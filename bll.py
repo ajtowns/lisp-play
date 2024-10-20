@@ -16,17 +16,9 @@ from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 SpecialBLLOps = {
     'q': 0,
     'a': 1,
-    'sf': 2,
-    'partial': 3,
+#    'sf': 2,
+#    'partial': 3,
 }
-
-def OpAtom(opcode : str) -> Optional[Atom]:
-    if opcode in SpecialBLLOps:
-        return Atom(SpecialBLLOps[opcode])
-    elif opcode in SExpr_FUNCS:
-        return Atom(SExpr_FUNCS[opcode])
-    else:
-        return None
 
 def ResolveOpcode(op : Element) -> Optional[Func]:
     if not isinstance(op, Atom):
@@ -45,6 +37,16 @@ def ResolveOpcode(op : Element) -> Optional[Func]:
         if opcls is None: return None
         return Func(fn_op, (opcls, opcls.initial_int_state()), opcls.initial_state())
 
+def OpAtom(opcode : str) -> Optional[Atom]:
+    if opcode in SpecialBLLOps:
+        return Atom(SpecialBLLOps[opcode])
+    elif opcode in SExpr_FUNCS:
+        return Atom(SExpr_FUNCS[opcode])
+    else:
+        return None
+
+####
+
 def ResolveEnv(baseenv : Element, idx : int) -> Element:
     idxstart = idx
     env = baseenv
@@ -62,7 +64,7 @@ def ResolveEnv(baseenv : Element, idx : int) -> Element:
         idx //= 2
     return env
 
-####
+#### allow specifying bll with named opcodes
 
 def ToBLL(sexpr : Element) -> Element:
     assert isinstance(sexpr, Element)
@@ -95,8 +97,7 @@ class fn_fin(FuncClass):
     @classmethod
     def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
         assert intstate is None and state.is_nil()
-        state.deref()
-        env.deref()
+        Element.deref_all(state, env)
         workitem.feedback(args)
 
 @FuncClass.implements_API
@@ -104,13 +105,44 @@ class fn_quote(FuncClass):
     @classmethod
     def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
         assert intstate is None and state.is_nil()
-        state.deref()
-        env.deref()
-        if args.is_bll():
-            workitem.feedback(args)
+        Element.deref_all(state, env)
+        workitem.feedback(args)
+
+@FuncClass.implements_API
+class fn_op(FuncClass):
+    @classmethod
+    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        opcls, opintstate = intstate
+        if args.is_nil():
+            f = opcls.finish(opintstate, state)  # XXX should consider state owned
+            Element.deref_all(state, args, env)
+            workitem.fin_value(f)
+        elif isinstance(args, Cons):
+            arg, rest = args.steal_children()
+            workitem.new_continuation(Func(cls, intstate, state), rest, env)
+            workitem.eval_arg(arg, env.bumpref())
         else:
-            args.deref()
-            workitem.error("cannot quote non-bll expression")
+            Element.deref_all(state, args, env)
+            workitem.error("argument to opcode is improper list")
+
+    @classmethod
+    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert not isinstance(value, Error)
+
+        if not value.is_bll():
+            workitem.error(f"cannot pass non-bll value {value} to opcode")
+            Element.deref_all(state, value, args, env)
+            return
+
+        opcls, opintst = intstate
+        (newst, newintst) = opcls.argument(opintst, state, value) # XXX state/value owned
+        Element.deref_all(state, value)
+
+        if isinstance(newst, Error):
+            workitem.fin_value(newst)
+            Element.deref_all(args, env)
+        else:
+            workitem.new_continuation(Func(cls, (opcls, newintst), newst), args, env)
 
 @FuncClass.implements_API
 class fn_blleval(FuncClass):
@@ -122,8 +154,7 @@ class fn_blleval(FuncClass):
         if not isinstance(args, Error) and not args.is_bll():
             # XXX should handle partial funcs here i guess?
             workitem.error(f"tried to eval something weird {args}")
-            args.deref()
-            env.deref()
+            Element.deref_all(args, env)
             return
 
         if isinstance(args, Error):
@@ -143,61 +174,14 @@ class fn_blleval(FuncClass):
             opfunc = ResolveOpcode(op)
             op.deref()
             if opfunc is None:
-                args.deref()
-                env.deref()
+                Element.deref_all(args, env)
                 workitem.error("invalid opcode")
             else:
                 workitem.new_continuation(opfunc, args, env)
         else:
             # internal error
-            args.deref()
-            env.deref()
+            Element.deref_all(args, env)
             workitem.error("BUG? should be unreachable")
-
-@FuncClass.implements_API
-class fn_op(FuncClass):
-    @classmethod
-    def step(cls, intstate : Any, state : Element, args : Element, env : Any, workitem : Any) -> None:
-        opcls, opintstate = intstate
-        if args.is_nil():
-            args.deref()
-            env.deref()
-            f = opcls.finish(opintstate, state)  # XXX should consider state owned
-            state.deref()
-            workitem.fin_value(f)
-        elif isinstance(args, Cons):
-            arg, rest = args.steal_children()
-            workitem.new_continuation(Func(cls, intstate, state), rest, env)
-            workitem.eval_arg(arg, env.bumpref())
-        else:
-            state.deref()
-            args.deref()
-            env.deref()
-            workitem.error("argument to opcode is improper list")
-
-    @classmethod
-    def feedback(cls, intstate : Any, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
-        assert not isinstance(value, Error)
-
-        if not value.is_bll():
-            workitem.error(f"cannot pass non-bll value {value} to opcode")
-            state.deref()
-            value.deref()
-            args.deref()
-            env.deref()
-            return
-
-        opcls, opintst = intstate
-        (newst, newintst) = opcls.argument(opintst, state, value) # XXX state/value owned
-        state.deref()
-        value.deref()
-
-        if isinstance(newst, Error):
-            workitem.fin_value(newst)
-            args.deref()
-            env.deref()
-        else:
-            workitem.new_continuation(Func(cls, (opcls, newintst), newst), args, env)
 
 @FuncClass.implements_API
 class fn_apply(FuncClass):
@@ -224,8 +208,7 @@ class fn_apply(FuncClass):
                 else:
                     assert isinstance(info, Cons)
                     assert i.is_atom() and i.val2 == b'\x01'
-                    i.deref()
-                    env.deref()
+                    Element.deref_all(i, env)
                     apply_env, apply_expr = info.steal_children()
             workitem.eval_arg(apply_expr, apply_env)
         elif isinstance(args, Cons):
@@ -242,8 +225,7 @@ class fn_apply(FuncClass):
 
         if not value.is_bll():
             workitem.error(f"cannot pass non-bll value {value} to apply")
-            state.deref()
-            value.deref()
+            Element.deref_all(state, value)
             return
 
         if not isinstance(state, Cons):
@@ -255,11 +237,7 @@ class fn_apply(FuncClass):
                 left.deref()
                 newst = Cons(Atom(1), Cons(value, apply_el))
             else:
-                left.deref()
-                apply_el.deref()
-                value.deref()
-                args.deref()
-                env.deref()
+                Element.deref_all(left, apply_el, vlaue, args, env)
                 workitem.error("too many args to apply")
                 return
 
@@ -275,9 +253,7 @@ class Continuation:
         return f"Continuation({self.fn}, {self.args})"
 
     def deref(self):
-        self.fn.deref()
-        self.args.deref()
-        self.env.deref()
+        Element.deref_all(self.fn, self.args, self.env)
 
 @dataclass
 class WorkItem:
@@ -306,6 +282,10 @@ class WorkItem:
             for c in self.continuations:
                 c.deref()
             self.continuations = []
+        elif not value.is_bll():
+            workitem.error(f"cannot quote non-bll expression {value}")
+            value.deref()
+            return
 
         if self.continuations:
             c = self.continuations.pop()
