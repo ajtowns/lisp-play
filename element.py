@@ -334,10 +334,13 @@ class Func(Pair):
         return obj, state
 
     def __str__(self):
-        if self.val1[1] is not None:
-            return "FN(%s,**,%s)" % (self.val1[0].__name__, self.val2)
+        if hasattr(self.val1[0], "getname"):
+            name = self.val1[0].getname(self.val1[1])
         else:
-            return "FN(%s,%s)" % (self.val1[0].__name__, self.val2)
+            name = self.val1[0].__name__
+            if self.val1[1] is not None:
+                name += ",**"
+        return "FN(%s,%s)" % (name, self.val2)
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51

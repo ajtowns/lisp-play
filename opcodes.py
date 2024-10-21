@@ -764,7 +764,7 @@ class op_tx(BinOpcode):
             code = right.as_int()
             which = None
         elif right.is_cons() and right.val1.is_atom() and right.val2.is_atom():
-            code = right.val2.as_int()
+            code = right.val1.as_int()
             which = right.val2.as_int()
         else:
             return Error("tx: bad argument")

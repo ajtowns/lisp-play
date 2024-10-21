@@ -37,6 +37,14 @@ class fn_op():
         self.opcls = opcls
         self.opintstate = opintstate
 
+    @classmethod
+    def getname(cls, opclsistate):
+        opcls, opintstate = opclsistate
+        name = opcls.__name__
+        if opintstate is not None:
+            name += ",**"
+        return name
+
     def __repr__(self):
         return self.opcls.__name__
 
