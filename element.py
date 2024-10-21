@@ -303,7 +303,7 @@ class FuncClass:
 
     # default behaviour
     @classmethod
-    def feedback(cls, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+    def feedback(cls : Type[API], state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
         value.deref()
         workitem.new_child(Func(cls, None, state), args, env)
 
@@ -313,18 +313,13 @@ class FuncClass:
 
 class Func(Pair):
     kind = FUNC
-    def __init__(self, fncls, intstate, state):
+    def __init__(self, fncls : Type[FuncClass.API], intstate : Any, state : Element):
         assert isinstance(fncls, type)
         assert isinstance(state, Element)
         super().__init__((fncls, intstate), state)
 
     def child_elements(self):
         return [self.val2]
-
-    def steal_cls_istate_state(self):
-        r = (self.val1[0], self.val1[1], self.val2.bumpref())
-        self.deref()
-        return r
 
     def steal_func(self):
         cls, intstate = self.val1
@@ -338,15 +333,11 @@ class Func(Pair):
             obj = cls(intstate)
         return obj, state
 
-    def cls_intst_st(self):
-        return self.val1[0], self.val1[1], self.val2
-
     def __str__(self):
         if self.val1[1] is not None:
             return "FN(%s,**,%s)" % (self.val1[0].__name__, self.val2)
         else:
             return "FN(%s,%s)" % (self.val1[0].__name__, self.val2)
-
 
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51

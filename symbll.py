@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import abc
 import functools
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Any
 
-from element import Element, SExpr, Atom, Cons, Error, Func
+from element import Element, SExpr, Atom, Cons, Error, Func, FuncClass, Symbol
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 from bll import OpAtom
+from workitem import fn_fin, fn_quote, fn_op
 
 ####
 
@@ -37,6 +40,19 @@ class SymbolTable(SymbolContainer):
             return SymbolInfo(is_func=True, sexpr=symvalue[1], params=symvalue[0])
         else:
             return SymbolInfo(is_func=False, sexpr=symvalue)
+
+    @classmethod
+    def from_list(cls, symlist : Element) -> SymbolTable:
+        s = cls()
+        while isinstance(symlist, Cons):
+            v, symlist = symlist.steal_children()
+            assert isinstance(v, Cons) and isinstance(v.val2, Symbol)
+            if v.val2.val2 not in s.syms:
+                s.set(v.val2.val2, v.val1.bumpref())
+            v.deref()
+        assert symlist.is_nil()
+        symlist.deref()
+        return s
 
     def __iter__(self):
         yield from self.syms.keys()
@@ -135,18 +151,16 @@ class SymbolIndex(SymbolContainer):
             res = [(n, v*2) for n,v in a] + [(n, v*2+1) for n,v in res]
         return res
 
-def ResolveSymbol(localsyms, globalsyms, symname):
-    assert isinstance(symname, str)
-
+def ResolveSymbol(localsyms : SymbolTable, globalsyms : SymbolTable, symname : str) -> Optional[Element]:
     if symname == "if":
-        return fn_if()
+        return Func(fn_if, None, Atom(0))
 
     if symname == "q":
-        return fn_quote()
+        return Func(fn_quote, None, Atom(0))
 
     if symname in SExpr_FUNCS:
-        op = Op_FUNCS[SExpr_FUNCS[symname]]
-        return fn_op(op)
+        opcls = Op_FUNCS[SExpr_FUNCS[symname]]
+        return Func(fn_op, (opcls, opcls.initial_int_state()), opcls.initial_state())
 
     # locals override globals, but do not override builtins
     r = localsyms[symname]
@@ -156,262 +170,187 @@ def ResolveSymbol(localsyms, globalsyms, symname):
         return None
 
     if r.is_func:
-        return fn_userfunc(r.params.bumpref(), r.sexpr.bumpref())
+        return Func(fn_userfunc, None, Cons(r.sexpr.bumpref(), Cons(r.params.bumpref(), Atom(0))))
     else:
         return r.sexpr.bumpref()
 
 #### evaluation model = workitem with continuations
 
-class Functor:
-    def step(self, workitem): raise NotImplementedError
-    def feedback(self, workitem, value):
-        # defaults to a no-op, discarding the passed in value
-        value.deref()
-    def deref(self):
-        pass # deref any internal state
-    def __repr__(self):
-        return self.__class__.__name__
+@FuncClass.implements_API
+class fn_symbll_eval(FuncClass):
+    @classmethod
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert state.is_nil()
+        state.deref()
 
-class fn_fin(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        assert workitem.continuations[-1].fn is self
-        if len(workitem.continuations) == 1:
-            return
-        cont = workitem.continuations[-1]
-        if cont.args.is_error():
-            workitem.continuations.pop()
-            while workitem.continuations:
-                workitem.popcont()
-            workitem.continuations.append(cont)
-            return
-        v = cont.args.bumpref()
-        workitem.popcont()
-        pcont = workitem.continuations[-1]
-        pcont.fn.feedback(workitem, v)
-
-class fn_quote(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-        assert isinstance(cont.args, Element)
-        if cont.args.is_bll():
-            cont.fn = fn_fin()
-            return cont.fn.step(workitem)
-        else:
-            workitem.error("cannot quote non-bll expression")
-
-class fn_eval(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-        assert isinstance(cont.args, Element)
-        if cont.args.is_atom() or cont.args.is_error():
-            cont.fn = fn_fin()
-            return cont.fn.step(workitem)
-        elif cont.args.is_cons():
-            op, cont.args = cont.args.steal_children()
+        if isinstance(args, Atom) or isinstance(args, Error):
+            env.deref()
+            workitem.fin_value(args)
+        elif isinstance(args, Cons):
+            op, args = args.steal_children()
             if op.is_symbol():
-                r = ResolveSymbol(cont.localsyms, workitem.globalsyms, op.val2)
+                r = ResolveSymbol(env, workitem.globalsyms, op.val2)
                 op.deref()
                 if r is None:
-                    workitem.error("undefined symbol")
-                elif isinstance(r, Functor):
-                     cont.fn = r
+                    args.deref()
+                    env.deref()
+                    workitem.error(f"undefined symbol")
+                elif isinstance(r, Func):
+                    workitem.new_continuation(r, args, env)
                 else:
-                     workitem.error("symbolic expression treated as function")
-                     r.deref()
+                    workitem.error("symbolic expression treated as function")
+                    r.deref()
+                    args.deref()
+                    env.deref()
             else:
                 op.deref()
+                args.deref()
+                env.deref()
                 workitem.error("expression does not have a function/operator")
-        elif cont.args.is_func():
+        elif args.is_func():
             # not sure?
+            env.deref()
+            args.deref()
             workitem.error("BUG? expression with raw function??")
-        elif cont.args.is_symbol():
-            r = ResolveSymbol(cont.localsyms, workitem.globalsyms, cont.args.val2)
+        elif args.is_symbol():
+            r = ResolveSymbol(env, workitem.globalsyms, args.val2)
             if r is None:
+                args.deref()
+                env.deref()
                 workitem.error("undefined symbol")
-                return
             elif isinstance(r, Element):
-                cont.fn = fn_fin()
-                cont.args.deref()
-                cont.args = r
-            elif isinstance(r, fn_userfunc):
-                r.deref()
-                cont.fn = fn_fin() # pass the symbol back as-is
-            elif isinstance(r, Functor):
-                workitem.error("opcode/function must be called")
-                r.deref()
+                workitem.fin_value(r)
+                args.deref()
+                env.deref()
             else:
-                workitem.error(f"BUG? symbol {cont.args}={r} isn't a functor or element")
+                workitem.error(f"BUG? symbol {args}={r} isn't an element")
+                args.deref()
+                env.deref()
         else:
             # internal error
+            args.deref()
+            env.deref()
             workitem.error("BUG? not sure what to eval")
 
-class fn_op(Functor):
-    def __init__(self, opcls):
-        self.op_func = Func(opcls, opcls.initial_int_state(), opcls.initial_state())
+@FuncClass.implements_API
+class fn_if(FuncClass):
+    @classmethod
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert state.is_nil()
+        state.deref()
 
-    @staticmethod
-    def _get_type(obj):
-        return obj if isinstance(obj, type) else type(obj)
-
-    def __repr__(self):
-        return f"{self.op_func}"
-
-    def deref(self):
-        self.op_func.deref()
-
-    def step(self, workitem):
-        assert workitem.continuations
-        assert workitem.continuations[-1].fn is self
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-        if cont.args.is_nil():
-            opcls, intst, st = self.op_func.cls_intst_st()
-            f = opcls.finish(intst, st)
-            c = Continuation(fn=fn_fin(), args=f, localsyms=cont.localsyms.bumpref())
-            workitem.popcont()
-            workitem.continuations.append(c)
-        elif cont.args.is_cons():
-            w, cont.args = cont.args.steal_children()
-            c = Continuation(fn=fn_eval(), args=w, localsyms=cont.localsyms.bumpref())
-            workitem.continuations.append(c)
-        else:
-            workitem.error("argument to opcode is improper list")
-
-    def feedback(self, workitem, value):
-        assert workitem.continuations
-        assert workitem.continuations[-1].fn is self
-        assert isinstance(value, Element)
-
-        if value.is_error():
-            cont = workitem.continuations[-1]
-            cont.args.deref()
-            cont.fn = fn_fin()
-            cont.args = value
-            return
-        if not value.is_bll():
-            workitem.error("cannot pass non-bll value to opcode")
-
-        opcls, intst, st = self.op_func.cls_intst_st()
-        (newst, newintst) = opcls.argument(intst, st, value)
-        value.deref()
-        if newst.is_error():
-             workitem.error(nof.val2)
-             nof.deref()
-             return
-        else:
-            self.op_func.deref()
-            self.op_func = Func(opcls, newintst, newst)
-
-class fn_if(Functor):
-    def step(self, workitem):
-        assert workitem.continuations
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-
-        if not cont.args.is_cons():
+        if not isinstance(args, Cons):
+            args.deref()
+            env.deref()
             workitem.error("if requires at least one argument")
             return
 
-        cond, cont.args = cont.args.steal_children()
-        c = Continuation(fn=fn_eval(), args=cond, localsyms=cont.localsyms.bumpref())
-        workitem.continuations.append(c)
+        cond, args = args.steal_children()
+        workitem.new_continuation(Func(cls, None, Atom(0)), args, env)
+        workitem.eval_arg(cond, env.bumpref())
 
-    def feedback(self, workitem, value):
-        assert workitem.continuations
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
+    @classmethod
+    def feedback(cls, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert state.is_nil()
+        state.deref()
+        assert not isinstance(value, Error)
 
-        if cont.args.is_cons():
-            iftrue, cont.args = cont.args.steal_children()
-        elif cont.args.is_nil():
+        if isinstance(args, Cons):
+            iftrue, args = args.steal_children()
+        elif args.is_nil():
             iftrue = Atom(1)
 
-        if cont.args.is_cons():
-            iffalse, cont.args = cont.args.steal_children()
-        elif cont.args.is_nil():
+        if isinstance(args, Cons):
+            iffalse, args = args.steal_children()
+        elif args.is_nil():
             iffalse = Atom(0)
 
-        if not cont.args.is_nil():
-            iftrue.deref()
-            iffalse.deref()
-            value.deref()
-            if cont.args.is_cons():
-                worktree.error("if must have at most three arguments")
+        if not args.is_nil():
+            is_cons = isinstance(args, Cons)
+            Element.deref_all(iftrue, iffalse, value, args)
+            env.deref()
+            if is_cons:
+                workitem.error("if must have at most three arguments")
             else:
-                worktree.error("argument to if are improper list")
+                workitem.error("argument to if are improper list")
             return
+        args.deref()
 
         if value.is_nil():
             iftrue.deref()
-            c = Continuation(fn=fn_eval(), args=iffalse, localsyms=cont.localsyms.bumpref())
+            workitem.eval_arg(iffalse, env)
         else:
             iffalse.deref()
-            c = Continuation(fn=fn_eval(), args=iftrue, localsyms=cont.localsyms.bumpref())
-        workitem.popcont()
-        workitem.continuations.append(c)
+            workitem.eval_arg(iftrue, env)
+
         value.deref()
 
-class fn_userfunc(Functor):
-    def __init__(self, params, expr):
-        self.params = params
-        self.expr = expr
-        self.syms = SymbolTable()
+@FuncClass.implements_API
+class fn_userfunc(FuncClass):
+    # state is:
+    #   ( expr . (dangling . satisfied) )
+    # dangling is a list of symbols
+    # satisfied is a list of (expr . symbol) pairs
 
-    def __repr__(self):
-        return f"{self.params}->{self.expr}"
+    @classmethod
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert isinstance(state, Cons)
+        expr, dangsat = state.steal_children()
+        assert isinstance(dangsat, Cons)
+        dangling, satisfied = dangsat.steal_children()
 
-    def deref(self):
-        self.params.deref()
-        self.expr.deref()
-        self.syms.deref()
-
-    def step(self, workitem):
-        assert workitem.continuations[-1].fn is self
-        cont = workitem.continuations[-1]
-        if cont.args.is_nil():
-            if self.params.is_nil():
+        if args.is_nil():
+            env.deref()
+            args.deref()
+            if dangling.is_nil():
                 # done!
-                c = Continuation(fn=fn_eval(), args=self.expr.bumpref(), localsyms=self.syms.bumpref())
-                workitem.popcont()
-                workitem.continuations.append(c)
-                return
+                dangling.deref()
+                workitem.eval_arg(expr, SymbolTable.from_list(satisfied))
             #elif self.params.is_cons() and self.params.val1.is_cons():
             #   XXX fill in default arguments
             else:
+                Element.deref_all(expr, dangling, satisfied)
                 workitem.error("insufficient arguments for user defined function")
-                return
-        elif cont.args.is_cons():
-            if self.params.is_nil():
+        elif isinstance(args, Cons):
+            if dangling.is_nil():
+                env.deref()
+                Element.deref_all(expr, dangling, satisfied, args)
                 workitem.error("too many arguments for user defined functions")
-                return
-            elif self.params.is_cons() and self.params.val1.is_symbol():
-                param, cont.args = cont.args.steal_children()
-                c = Continuation(fn=fn_eval(), args=param, localsyms=cont.localsyms.bumpref())
-                workitem.continuations.append(c)
-                return
+            elif isinstance(dangling, Cons) and isinstance(dangling.val1, Symbol):
+                # XXX handle default arguments here too
+                val, args = args.steal_children()
+                myfunc = Func(cls, None, Cons(expr, Cons(dangling, satisfied)))
+                workitem.new_continuation(myfunc, args, env)
+                workitem.eval_arg(val, env.bumpref())
             else:
+                env.deref()
+                Element.deref_all(expr, dangling, satisfied, args)
                 workitem.error("user defined function has non-symbol as param name?")
-                return
         else:
+            env.deref()
+            Element.deref_all(expr, dangling, satisfied, args)
             workitem.error("call to user defined function is not proper list")
-            return
 
-    def feedback(self, workitem, value):
-        cont = workitem.continuations[-1]
-        assert cont.fn is self
-        assert self.params.is_cons() and self.params.val1.is_symbol()
-        param, self.params = self.params.steal_children()
-        self.syms.set(param.val2, value)
-        param.deref()
+    @classmethod
+    def feedback(cls, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert not isinstance(value, Error)
+
+        assert isinstance(state, Cons)
+        expr, dangsat = state.steal_children()
+        assert isinstance(dangsat, Cons)
+        dangling, satisfied = dangsat.steal_children()
+        assert isinstance(dangling, Cons)
+        toassign, dangling = dangling.steal_children()
+        assert isinstance(toassign, Symbol)
+
+        satisfied = Cons( Cons(value, toassign), satisfied )
+
+        myfunc = Func(cls, None, Cons(expr, Cons(dangling, satisfied)))
+        workitem.new_continuation(myfunc, args, env)
 
 @dataclass
 class Continuation:
-    fn: Functor
+    fn: Func
     args: Element           # (remaining) arguments to fn
     localsyms: SymbolTable
 
@@ -427,41 +366,52 @@ class Continuation:
 class WorkItem:
     globalsyms: SymbolTable
     continuations: List[Continuation]
-    dummylocalsyms: SymbolTable = field(default_factory=SymbolTable)
+    dummylocalsyms: SymbolTable
 
     @classmethod
     def begin(cls, sexpr, syms):
-        wi = WorkItem(globalsyms=syms, continuations=[])
-        c = Continuation(fn=fn_eval(), args=sexpr, localsyms=wi.dummylocalsyms.bumpref())
-        wi.continuations.append(c)
+        wi = WorkItem(globalsyms=syms, continuations=[], dummylocalsyms=SymbolTable())
+        wi.eval_arg(sexpr, wi.dummylocalsyms.bumpref())
         return wi
 
+    def new_continuation(self, fn : Func, args : Element, env : SymbolTable) -> None:
+        self.continuations.append(Continuation(fn, args, env))
+
+    def fin_value(self, value : Element) -> None:
+        self.new_continuation(Func(fn_fin, None, Atom(0)), value, self.dummylocalsyms.bumpref())
+
+    def eval_arg(self, args : Element, env : SymbolTable) -> None:
+        self.new_continuation(Func(fn_symbll_eval, None, Atom(0)), args, env)
+
     def error(self, msg):
-        c = Continuation(fn=fn_fin(), args=Error(msg), localsyms=self.dummylocalsyms.bumpref())
-        self.popcont()
-        self.continuations.append(c)
+        self.fin_value(Error(msg))
 
-    def popcont(self):
-        last = self.continuations.pop()
-        last.deref()
+    def step(self) -> None:
+        c = self.continuations.pop()
+        fnobj, state = c.fn.steal_func()
+        fnobj.step(state, c.args, c.localsyms, self)
 
-    def finished(self):
-        return isinstance(self.continuations[0].fn, fn_fin)
+    def feedback(self, value : Element) -> None:
+        if isinstance(value, Error):
+            for c in self.continuations:
+                c.deref()
+            self.continuations = []
 
-    def get_result(self):
+        if self.continuations:
+            c = self.continuations.pop()
+            fnobj, state = c.fn.steal_func()
+            fnobj.feedback(state, value, c.args, c.localsyms, self)
+        else:
+            self.fin_value(value)
+
+    def finished(self) -> bool:
+        return len(self.continuations) == 1 and self.continuations[0].fn.val1[0] == fn_fin
+
+    def get_result(self) -> Element:
         assert self.finished()
         r = self.continuations[0].args.bumpref()
-        self.popcont()
+        self.continuations.pop().deref()
         return r
-
-    def localsyms(self):
-        if self.continuations:
-            return self.continuations[-1].localsyms
-        else:
-            return self.dummylocalsyms
-
-    def step(self):
-        cont = self.continuations[-1].fn.step(self)
 
 def symbolic_eval(sexpr, globalsyms):
     wi = WorkItem.begin(sexpr, globalsyms)
@@ -482,7 +432,7 @@ def ResolveIndex(symname, globalidx, localidx):
 
 def compile_args(args, globalidx, localidx):
     l = []
-    while args.is_cons():
+    while isinstance(args, Cons):
         l.append(compile_expr(args.val1, globalidx, localidx))
         args = args.val2
     l = SExpr.list_to_element(l)
@@ -508,8 +458,7 @@ def compile_expr(sexpr, globalidx, localidx):
             raise Exception("invalid symbol")
         return Atom(s.position)
     else:
-        assert sexpr.is_cons()
-        assert sexpr.val1.is_symbol()
+        assert isinstance(sexpr, Cons) and isinstance(sexpr.val1, Symbol)
         symname = sexpr.val1.val2
         if symname == 'q':
             assert sexpr.val2.is_bll()
