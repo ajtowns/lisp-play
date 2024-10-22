@@ -342,6 +342,7 @@ class Func(Pair):
                 name += ",**"
         return "FN(%s,%s)" % (name, self.val2)
 
+#XXX broken
 class SerDeser:
     MAX_QUICK_ONEBYTE = 51
     MAX_QUICK_MULTIBYTE = 64

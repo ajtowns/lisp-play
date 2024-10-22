@@ -929,8 +929,9 @@ FUNCS = [
   (0x1e, "<", op_lt_num),   # not restricted to u64
 # 0x1f missing
 
-  (0x20, "rd", op_list_read), # read bytes to Element
-  (0x21, "wr", op_list_write), # write Element as bytes
+#XXX element.py code seems to be buggy
+#  (0x20, "rd", op_list_read), # read bytes to Element
+#  (0x21, "wr", op_list_write), # write Element as bytes
 
   (0x22, "sha256", op_sha256),
   (0x23, "ripemd160", op_ripemd160),
