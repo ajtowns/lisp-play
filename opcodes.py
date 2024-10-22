@@ -985,6 +985,7 @@ FUNCS = [
 #    (signextend 0x81 4) -> 0x01000080
 #       (signextend 0x123400 0) = (signextend 0x123400) -> 0x1234
 #       (= (signextend a) (signextend b)) <-- numequal
+#       ... maybe (substr ...) should pad short strings with trailing 0's?
 #    (max a b c)
 #    (min a b c)
 #    (rev 0x01020304) -> 0x04030201
