@@ -496,6 +496,41 @@ class op_eq(BinOpcode):
         else:
             return state.bumpref()
 
+class op_bigeq(BinOpcode):
+    @staticmethod
+    def initial_state():
+        return Atom(1)
+
+    @classmethod
+    def binop(cls, left, right):
+        if left.is_nil():
+            # failed already
+            return left.bumpref()
+        elif left.is_atom():
+            # first arg, nothing to be equal to
+            return Cons(right.bumpref(), left.bumpref())
+        else:
+            chk = [(left.val1, right)]
+            while chk:
+                a, b = chk.pop()
+                if a.is_atom():
+                    if not b.is_atom() or a.val1 != b.val1 or a.val2 != b.val2:
+                        return Atom(0)
+                elif b.is_atom():
+                    return Atom(0)
+                else:
+                    assert a.is_cons() and b.is_cons()
+                    chk.append((a.val1, b.val1))
+                    chk.append((a.val2, b.val2))
+            return left.bumpref()
+
+    @staticmethod
+    def finish(intstate, state):
+        if state.is_cons():
+            return state.val2.bumpref()
+        else:
+            return state.bumpref()
+
 class op_strlen(BinOpcode):
     @classmethod
     def binop(cls, left, right):
@@ -913,6 +948,8 @@ FUNCS = [
   (0x10, "strlen", op_strlen),
   (0x11, "substr", op_substr),
   (0x12, "cat", op_cat),
+
+  (0xff, "===", op_bigeq), ## XXX shouldn't be an opcode?
 
   (0x13, "~", op_nand_bytes),
   (0x14, "&", op_and_bytes),
