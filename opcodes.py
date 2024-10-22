@@ -640,8 +640,7 @@ class op_list_write(FixOpcode):
         eser = SerDeser().Serialize(el)
         return Atom(eser)
 
-'''
-class op_secp256k1_muladd(Operator):
+class op_secp256k1_muladd(BinOpcode):
     """(secp256k1_muladd a (b) (c . d) (1 . e) (nil . f))
        checks that a*G - b*G + c*D + E - F = 0
        Script aborts otherwise.
@@ -660,50 +659,59 @@ class op_secp256k1_muladd(Operator):
        where e is H(R,P,m) as per BIP340.
     """
 
-    def __init__(self):
-        self.aps = []
-
-    def resolve_spec(self):
-        # each arg should be either an atom, or a pair of atoms
-        return xATCO(xAT(), xAT())
-
-    def argspec(self, argspec):
-        if argspec.el.is_atom():
-            ### XXX we use big-endian integers here, not little!!
-            b = argspec.el.atom_as_bytes()
-            if len(b) > 32: raise Exception("secp256k1_muladd: int out of range")
-            val = int.from_bytes(b, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
-            pt = verystable.core.secp256k1.G
+    @classmethod
+    def binop(cls, left, right):
+        if right.is_cons():
+            scalar = right.val1
+            if not right.val2.is_atom():
+                return Error("secp256k1_muladd: point must be atom")
         else:
-            b = argspec.left.el.atom_as_bytes()
-            if len(b) > 32: raise Exception("secp256k1_muladd: int out of range")
-            if argspec.left.el.val2 == 0:
-                val = verystable.core.secp256k1.FE.SIZE - 1
-            else:
-                val = int.from_bytes(b, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
+            scalar = right
+        if not scalar.is_atom():
+            return Error("secp256k1_muladd: scalar must be atom")
+        if scalar.val1 > 32:
+            return Error("secp25691_muladd: scalar out of range")
 
-            b = argspec.right.el.atom_as_bytes()
-            if len(b) == 32:
-                pt = verystable.core.secp256k1.GE.from_bytes_xonly(b)
-            elif len(b) == 33:
-                pt = verystable.core.secp256k1.GE.from_bytes(b)
-            elif len(b) == 0:
-                pt = -verystable.core.secp256k1.G
-            else:
-                raise Exception("secp256k1_muladd: point out of range")
-            if pt is None:
-                raise Exception("secp256k1_muladd: invalid point")
-        self.aps.append((val, pt))
-        argspec.el.deref()
+        return Cons(right.bumpref(), left.bumpref())
 
-    def finish(self):
-        x = verystable.core.secp256k1.GE.mul(*self.aps)
+    @staticmethod
+    def finish(intstate, state):
+        assert intstate is None
+        aps = []
+        while isinstance(state, Cons):
+            el, state = state.val1, state.val2
+            if el.is_atom():
+                scalar = el.val2
+                point = None
+            else:
+                assert el.is_cons()
+                assert el.val1.is_atom() and el.val2.is_atom()
+                scalar = el.val1.val2
+                point = el.val2.val2
+            if scalar == b'':
+                scalar = verystable.core.secp256k1.FE.SIZE - 1
+            else:
+                # XXX treating as big-endian for compatibility with bip340, and lack of `rev` opcode
+                scalar = int.from_bytes(scalar, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
+            if scalar == 0:
+                return Error("secp256k1_muladd: scalar is 0")
+            if point is None:
+                point = verystable.core.secp256k1.G
+            elif point == b'':
+                point = -verystable.core.secp256k1.G
+            elif len(point) == 32:
+                point = verystable.core.secp256k1.GE.from_bytes_xonly(point)
+            elif len(point) == 33 and point[0] == 2 or point[0] == 3:
+                point = verystable.core.secp256k1.GE.from_bytes(point)
+            else:
+                return Error("secp256k1_muladd: point out of range")
+            if point is None:
+                return Error("secp256k1_muladd: invalid point")
+            aps.append((scalar,point))
+        x = verystable.core.secp256k1.GE.mul(*aps)
         if not x.infinity:
-            print("XXX muladd", [(a, p.to_bytes_compressed().hex()) for (a,p) in self.aps])
-            return Error(f"secp256k1_muladd: did not sum to inf {x.to_bytes_compressed().hex()}")
+            return Error("secp256k1_muladd: did not sum to inf")
         return Atom(1)
-'''
-
 
 class op_bip340_verify(FixOpcode):
     min_args = max_args = 3
@@ -976,7 +984,7 @@ FUNCS = [
   (0x25, "hash256", op_hash256),
   (0x26, "bip340_verify", op_bip340_verify),
   (0x27, "ecdsa_verify", op_ecdsa_verify),
-#  (0x28, "secp256k1_muladd", op_secp256k1_muladd),
+  (0x28, "secp256k1_muladd", op_secp256k1_muladd),
 
   (0x29, "tx", op_tx),
   (0x2a, "bip342_txmsg", op_bip342_txmsg),
