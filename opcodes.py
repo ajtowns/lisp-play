@@ -535,14 +535,14 @@ class op_strlen(BinOpcode):
     @classmethod
     def binop(cls, left, right):
         if not right.is_atom():
-            return Error("not an atom")
+            return Error(f"strlen: not an atom {right}")
         return Atom(left.as_int() + len(right.val2))
 
 class op_cat(BinOpcode):
     @classmethod
     def binop(cls, left, right):
         if not right.is_atom():
-            return Error("not an atom")
+            return Error(f"cat: not an atom {right}")
         return Atom(left.val2 + right.val2)
 
 class op_substr(FixOpcode):
@@ -681,32 +681,32 @@ class op_secp256k1_muladd(BinOpcode):
         while isinstance(state, Cons):
             el, state = state.val1, state.val2
             if el.is_atom():
-                scalar = el.val2
-                point = None
+                bscalar = el.val2
+                bpoint = None
             else:
                 assert el.is_cons()
                 assert el.val1.is_atom() and el.val2.is_atom()
-                scalar = el.val1.val2
-                point = el.val2.val2
-            if scalar == b'':
+                bscalar = el.val1.val2
+                bpoint = el.val2.val2
+            if bscalar == b'':
                 scalar = verystable.core.secp256k1.FE.SIZE - 1
             else:
                 # XXX treating as big-endian for compatibility with bip340, and lack of `rev` opcode
-                scalar = int.from_bytes(scalar, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
+                scalar = int.from_bytes(bscalar, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
             if scalar == 0:
                 return Error("secp256k1_muladd: scalar is 0")
-            if point is None:
+            if bpoint is None:
                 point = verystable.core.secp256k1.G
-            elif point == b'':
+            elif bpoint == b'':
                 point = -verystable.core.secp256k1.G
-            elif len(point) == 32:
-                point = verystable.core.secp256k1.GE.from_bytes_xonly(point)
-            elif len(point) == 33 and point[0] == 2 or point[0] == 3:
-                point = verystable.core.secp256k1.GE.from_bytes(point)
+            elif len(bpoint) == 32:
+                point = verystable.core.secp256k1.GE.from_bytes_xonly(bpoint)
+            elif len(bpoint) == 33 and (bpoint[0] == 2 or bpoint[0] == 3):
+                point = verystable.core.secp256k1.GE.from_bytes(bpoint)
             else:
-                return Error("secp256k1_muladd: point out of range")
+                return Error(f"secp256k1_muladd: point out of range 0x{bpoint.hex()}")
             if point is None:
-                return Error("secp256k1_muladd: invalid point")
+                return Error(f"secp256k1_muladd: invalid point 0x{bpoint.hex()}")
             aps.append((scalar,point))
         x = verystable.core.secp256k1.GE.mul(*aps)
         if not x.infinity:
@@ -719,7 +719,7 @@ class op_bip340_verify(FixOpcode):
     @classmethod
     def operation(cls, pk, m, sig):
         if not pk.is_atom() or pk.val1 != 32:
-            return Error("invalid pubkey")
+            return Error(f"invalid pubkey {pk}")
         if not m.is_atom() or m.val1 != 32:
             return Error("invalid msg")
 
