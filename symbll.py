@@ -158,6 +158,9 @@ def ResolveSymbol(localsyms : SymbolTable, globalsyms : SymbolTable, symname : s
     if symname == "q":
         return Func(fn_quote, None, Atom(0))
 
+    if symname == "report":
+        return Func(fn_report, None, Atom(0))
+
     if symname in SExpr_FUNCS:
         opcls = Op_FUNCS[SExpr_FUNCS[symname]]
         return Func(fn_op, (opcls, opcls.initial_int_state()), opcls.initial_state())
@@ -286,6 +289,40 @@ class fn_if(FuncClass):
         value.deref()
 
 @FuncClass.implements_API
+class fn_report(FuncClass):
+    @staticmethod
+    def report(state):
+        a = []
+        while state.is_cons():
+            a.append(state.val1)
+            state = state.val2
+        if not a:
+            last = state
+        else:
+            last = a[-1]
+        print(f"report: ({" ".join(map(str, reversed(a)))})")
+        return last.bumpref()
+
+    def step(self, state : Element, args : Element, env : Any, workitem : Any) -> None:
+        if args.is_nil():
+            result = self.report(state)
+            env.deref()
+            Element.deref_all(state, args)
+            workitem.fin_value(result)
+        elif isinstance(args, Cons):
+            arg, rest = args.steal_children()
+            workitem.new_continuation(Func(self.__class__, None, state), rest, env)
+            workitem.eval_arg(arg, env.bumpref())
+        else:
+            env.deref()
+            Element.deref_all(state, args)
+            workitem.error("argument to report is improper list")
+
+    def feedback(self, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+        assert not isinstance(value, Error)
+        workitem.new_continuation(Func(self.__class__, None, Cons(value, state)), args, env)
+
+@FuncClass.implements_API
 class fn_userfunc(FuncClass):
     # state is:
     #   ( expr . (dangling . satisfied) )
@@ -315,7 +352,7 @@ class fn_userfunc(FuncClass):
             if dangling.is_nil():
                 env.deref()
                 Element.deref_all(expr, dangling, satisfied, args)
-                workitem.error("too many arguments for user defined functions")
+                workitem.error(f"too many arguments for user defined functions {state}")
             elif isinstance(dangling, Cons) and isinstance(dangling.val1, Symbol):
                 # XXX handle default arguments here too
                 val, args = args.steal_children()
