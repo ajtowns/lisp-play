@@ -678,13 +678,6 @@ class op_secp256k1_muladd(BinOpcode):
                 assert el.val1.is_atom() and el.val2.is_atom()
                 bscalar = el.val1.val2
                 bpoint = el.val2.val2
-            if bscalar == b'':
-                scalar = verystable.core.secp256k1.FE.SIZE - 1
-            else:
-                # XXX treating as big-endian for compatibility with bip340, and lack of `rev` opcode
-                scalar = int.from_bytes(bscalar, byteorder='big', signed=False) % verystable.core.secp256k1.FE.SIZE
-            if scalar == 0:
-                return Error("secp256k1_muladd: scalar is 0")
             if bpoint is None:
                 point = verystable.core.secp256k1.G
             elif bpoint == b'':
@@ -694,9 +687,18 @@ class op_secp256k1_muladd(BinOpcode):
             elif len(bpoint) == 33 and (bpoint[0] == 2 or bpoint[0] == 3):
                 point = verystable.core.secp256k1.GE.from_bytes(bpoint)
             else:
-                return Error(f"secp256k1_muladd: point out of range 0x{bpoint.hex()}")
+                return Error(f"secp256k1_muladd: unparseable point 0x{bpoint.hex()}")
             if point is None:
                 return Error(f"secp256k1_muladd: invalid point 0x{bpoint.hex()}")
+            if bscalar == b'':
+                scalar = 1
+                point = -point
+                # or scalar = GE.ORDER-1
+            else:
+                # XXX treating as big-endian for compatibility with bip340, and lack of `rev` opcode
+                scalar = int.from_bytes(bscalar, byteorder='big', signed=False) % verystable.core.secp256k1.GE.ORDER
+                if scalar == 0:
+                    return Error("secp256k1_muladd: scalar is 0")
             aps.append((scalar,point))
         x = verystable.core.secp256k1.GE.mul(*aps)
         if not x.infinity:
@@ -873,14 +875,18 @@ class op_tx(BinOpcode):
                 return b''
         elif code == 7:
             # taproot internal pubkey
-            raise Error("tx: code 7 unimplemented")
+            leafver, sign, ipk, path = cls.get_bip341info()
+            return ipk
         elif code == 8:
             # taproot merkle path
-            raise Error("tx: code 8 unimplemented")
-        # should also be able to pull out control block information,
-        # eg merkle path and internal pubkey
+            leafver, sign, ipk, path = cls.get_bip341info()
+            return path
+        elif code == 9:
+            # leafver, sign
+            leafver, sign, ipk, path = cls.get_bip341info()
+            return Cons(Atom(leafver), Atom(sign)) # XXX split?
         else:
-            return b''
+            assert False # unreachable
 
     @classmethod
     def get_tx_input_info(cls, code, which):
