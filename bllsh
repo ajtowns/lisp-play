@@ -91,12 +91,14 @@ def handle_exc(func):
 ####
 
 class BTCLispRepl(cmd.Cmd):
-    HISTPATH = "~/.bllsh.history"
     HISTSIZE = 2000
 
     @classmethod
     def histpath(cls):
-        return os.path.expanduser(cls.HISTPATH)
+        HISTPATH = os.getenv("BLLSH_HISTPATH", None)
+        if HISTPATH is None:
+            HISTPATH = os.path.expanduser("~/.bllsh.history")
+        return HISTPATH
 
     def __init__(self, prompt=None):
         self.prompt = ">>> " if prompt is None else prompt
