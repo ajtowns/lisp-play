@@ -193,11 +193,10 @@ class fn_symbll_eval(FuncClass):
             op, args = args.steal_children()
             if op.is_symbol():
                 r = ResolveSymbol(env, workitem.globalsyms, op.val2)
-                op.deref()
                 if r is None:
                     args.deref()
                     env.deref()
-                    workitem.error(f"undefined symbol")
+                    workitem.error(f"undefined symbol {op}")
                 elif isinstance(r, Func):
                     workitem.new_continuation(r, args, env)
                 else:
@@ -205,6 +204,7 @@ class fn_symbll_eval(FuncClass):
                     r.deref()
                     args.deref()
                     env.deref()
+                op.deref()
             else:
                 op.deref()
                 args.deref()
@@ -312,7 +312,11 @@ class fn_report(FuncClass):
         elif isinstance(args, Cons):
             arg, rest = args.steal_children()
             workitem.new_continuation(Func(self.__class__, None, state), rest, env)
-            workitem.eval_arg(arg, env.bumpref())
+            if not state.is_nil() and isinstance(arg, Cons) and isinstance(arg.val1, Symbol) and isinstance(arg.val2, Symbol) and arg.val1.val1 == 'q':
+                # special case: when reporting, quoting a symbol is legal if it's not the value that will be returned
+                workitem.fin_value(arg, arg.val2.bumpref())
+            else:
+                workitem.eval_arg(arg, env.bumpref())
         else:
             env.deref()
             Element.deref_all(state, args)
