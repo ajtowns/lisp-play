@@ -12,16 +12,6 @@ import verystable.core.secp256k1
 
 from element import Element, Atom, Cons, Error, SerDeser, int_to_bytes
 
-def get_env(n, env):
-    if n < 0:
-        raise Exception("env argument out of range: %s" % (n,))
-    while n > 1:
-        if not env.is_cons():
-            raise Exception("invalid env path %d" % (n,))
-        n, x = divmod(n, 2)
-        env = env.val2 if x else env.val1
-    return env
-
 class Tree:
     def __init__(self):
         self.tree = []
