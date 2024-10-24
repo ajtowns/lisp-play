@@ -752,7 +752,8 @@ class op_ecdsa_verify(FixOpcode):
 
         r = ecpk.verify_ecdsa(sig.val2, m.val2, low_s=False)
         if not r:
-            # must be an error to allow for batch verification
+            # treat as an error for consistency with bip340_verify, and avoid
+            # wasted calculations
             return Error("ecdsa_verify: invalid, non-empty signature")
 
         return Atom(1)
@@ -964,11 +965,8 @@ FUNCS = [
   (0x18, "-", op_sub),
   (0x19, "*", op_mul),
   (0x1a, "%", op_mod),
-#  (0x1b, "/%", op_divmod), # (/ a b) => (h (/% a b))
-#  (0x1c, "<<", op_lshift),
-#  (0x1d, ">>", op_rshift),
   (0x1e, "<", op_lt_num),   # not restricted to u64
-# 0x1f missing
+# 0x1b, 0x1c, 0x1d, 0x1f missing
 
 #XXX element.py code seems to be buggy
 #  (0x20, "rd", op_list_read), # read bytes to Element
@@ -990,12 +988,13 @@ FUNCS = [
 #       (signextend 0x123400 0) = (signextend 0x123400) -> 0x1234
 #       (= (signextend a) (signextend b)) <-- numequal
 #       ... maybe (substr ...) should pad short strings with trailing 0's?
-#    (max a b c)
-#    (min a b c)
+#    (max/min a b c) -> (using < or <s ?)
 #    (rev 0x01020304) -> 0x04030201
 #    (abs 0x81) -> 0x01
 #    (constant K) -> (G, H, G/2, curve order, etc)
 #    (log2b42 N) -> floor(log_2(n) * 2**42), error if n<=0
+#    / /% -> division, divmod
+#    << >> -> shifting ops (how to deal with negatives?)
 ]
 
 
