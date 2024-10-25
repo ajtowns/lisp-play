@@ -139,15 +139,6 @@ class BTCLispRepl(cmd.Cmd):
         if self.prompt != "": print()
         return True
 
-    @handle_exc
-    def do_tobll(self, arg):
-        s = SExpr.parse(arg)
-        b = bll.ToBLL(s)
-        print(b)
-        s.deref()
-        b.deref()
-
-
     def bllparse(self, arg):
         se = SExpr.parse(arg, manypy=True)
         if len(se) < 1 or len(se) > 2:
