@@ -23,15 +23,13 @@ import verystable.core.messages
 
 ##########
 
-# To do:
+# Todo:
 #
-#  * all the opcodes
-#  * implement "partial"
 #  * implement "softfork"
 #  * make "blleval" / "apply" available in symbll
-#  * add tx/utxo commands
+#  * misc additional opcodes
 #
-#  * add support for "@SYM" to mean SYM turned into a bll program?
+#  * add support for "@SYM" to mean SYM turned into a bll program in general?
 #
 #  * default values for fn arguments
 #  * destructuring of fn arguments?
@@ -39,41 +37,8 @@ import verystable.core.messages
 #  * quasiquote support
 #
 #  * do stuff about costs?
-#  * do stuff about ensuring refcounting is correct?
 #
 #  * add tui debugger (via "textual" module?)
-#
-# possibly:
-#    def (factorial x (= acc 1))  (a (i x '(factorial (- x 1) (* acc x)) 'acc))
-#    eval (factorial 7)
-
-##########
-
-# how does compilation work?
-# i guess i want something that will interpret from just numbers?
-
-#    def (foo a b c) (* (+ a b) (+ a c) 3)
-#    ; (foo 1 2 3)
-
-#    def (foo (a.3) (b.4) (c.5)) (* (+ a b) (+ a c) 3)
-#    ; (foo) = (foo 3 4 5)
-
-#    $foo = (* (+ 9 13) (+ 9 7) (nil . 3))    ## whatever values * and + are
-
-#    def (bar a) (foo a (+ a 1) (+ a 2))
-#    def (qux a) (+ a 2)
-
-#    $bar = (a 8 2 (b 3 (+ 3 (q . 1)) (+ 3 (q . 2))))
-
-#    (a (i X bar qux) 9)
-#    (a (i X 12 6) (q . 9))
-
-#    that's basically the "if" construction anyway? except with arguments
-
-# if we did elements2.py, perhaps we could tag elements as to whether they
-# reference a symbol/function/etc?, or are bll-compatible?
-# if we did that, should continuations become elements? with a special type, or
-# just semi-structured?
 
 ##########
 

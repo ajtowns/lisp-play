@@ -10,7 +10,7 @@ from typing import Type, List, Optional, Any
 
 from element import Element, SExpr, Atom, Cons, Error, Func, FuncClass
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
-from workitem import fn_fin, fn_quote, fn_op
+from workitem import fn_fin, fn_quote, fn_op, fn_partial
 
 ####
 
@@ -18,7 +18,7 @@ SpecialBLLOps = {
     'q': 0,
     'a': 1,
 #    'sf': 2,
-#    'partial': 3,
+    'partial': 3,
 }
 
 def ResolveOpcode(op : Element) -> Optional[Func]:
@@ -31,8 +31,8 @@ def ResolveOpcode(op : Element) -> Optional[Func]:
         return Func(fn_apply, None, Atom(0))
     #elif opnum == 2:
     #    return fn_softfork()
-    #elif opnum == 3:
-    #    return fn_partial()
+    elif opnum == 3:
+        return Func(fn_partial, None, Atom(0))
     else:
         opcls = Op_FUNCS.get(opnum, None)
         if opcls is None: return None
@@ -121,12 +121,12 @@ class fn_blleval(FuncClass):
         elif isinstance(args, Cons):
             op, args = args.steal_children()
             opfunc = ResolveOpcode(op)
-            op.deref()
             if opfunc is None:
                 Element.deref_all(args, env)
-                workitem.error("invalid opcode")
+                workitem.error(f"invalid opcode {op}")
             else:
                 workitem.new_continuation(opfunc, args, env)
+            op.deref()
         else:
             # internal error
             Element.deref_all(args, env)
@@ -170,11 +170,6 @@ class fn_apply():
     def feedback(cls, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
         assert not isinstance(value, Error)
 
-        if not value.is_bll():
-            workitem.error(f"cannot pass non-bll value {value} to apply")
-            Element.deref_all(state, value)
-            return
-
         if not isinstance(state, Cons):
             assert state.is_nil()
             newst = Cons(state, value)
@@ -211,6 +206,19 @@ class WorkItem:
         wi = WorkItem(continuations=[])
         wi.eval_arg(sexpr, env)
         return wi
+
+    def get_partial_func(self, value : Element) -> Optional[Element]:
+        if isinstance(value, Atom):
+            opnum = value.as_int()
+            value.deref()
+            opcls = Op_FUNCS.get(opnum, None)
+            if opcls is not None:
+                return Func(fn_op, (opcls, opcls.initial_int_state()), opcls.initial_state())
+        elif isinstance(value, Func) and issubclass(value.val1[0], (fn_op, fn_partial)):
+            return value
+
+        value.deref()
+        return None
 
     def new_continuation(self, fn : Func, args : Element, env : Element) -> None:
         self.continuations.append(Continuation(fn, args, env))

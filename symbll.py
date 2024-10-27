@@ -11,7 +11,7 @@ from typing import List, Optional, Any
 from element import Element, SExpr, Atom, Cons, Error, Func, FuncClass, Symbol
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 from bll import OpAtom
-from workitem import fn_fin, fn_quote, fn_op
+from workitem import fn_fin, fn_quote, fn_op, fn_partial
 
 ####
 
@@ -161,6 +161,9 @@ def ResolveSymbol(localsyms : SymbolTable, globalsyms : SymbolTable, symname : s
     if symname == "report":
         return Func(fn_report, None, Atom(0))
 
+    if symname == "partial":
+        return Func(fn_partial, None, Atom(0))
+
     if symname in SExpr_FUNCS:
         opcls = Op_FUNCS[SExpr_FUNCS[symname]]
         return Func(fn_op, (opcls, opcls.initial_int_state()), opcls.initial_state())
@@ -303,15 +306,16 @@ class fn_report(FuncClass):
         print(f"report: ({" ".join(map(str, reversed(a)))})")
         return last.bumpref()
 
-    def step(self, state : Element, args : Element, env : Any, workitem : Any) -> None:
+    @classmethod
+    def step(cls, state : Element, args : Element, env : Any, workitem : Any) -> None:
         if args.is_nil():
-            result = self.report(state)
+            result = cls.report(state)
             env.deref()
             Element.deref_all(state, args)
             workitem.fin_value(result)
         elif isinstance(args, Cons):
             arg, rest = args.steal_children()
-            workitem.new_continuation(Func(self.__class__, None, state), rest, env)
+            workitem.new_continuation(Func(cls, None, state), rest, env)
             if not state.is_nil() and isinstance(arg, Cons) and isinstance(arg.val1, Symbol) and isinstance(arg.val2, Symbol) and arg.val1.val1 == 'q':
                 # special case: when reporting, quoting a symbol is legal if it's not the value that will be returned
                 workitem.fin_value(arg, arg.val2.bumpref())
@@ -322,9 +326,10 @@ class fn_report(FuncClass):
             Element.deref_all(state, args)
             workitem.error("argument to report is improper list")
 
-    def feedback(self, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
+    @classmethod
+    def feedback(cls, state : Element, value : Element, args : Element, env : Any, workitem : Any) -> None:
         assert not isinstance(value, Error)
-        workitem.new_continuation(Func(self.__class__, None, Cons(value, state)), args, env)
+        workitem.new_continuation(Func(cls, None, Cons(value, state)), args, env)
 
 @FuncClass.implements_API
 class fn_userfunc(FuncClass):
@@ -415,6 +420,13 @@ class WorkItem:
         wi.eval_arg(sexpr, wi.dummylocalsyms.bumpref())
         return wi
 
+    def get_partial_func(self, value : Element) -> Optional[Element]:
+        if isinstance(value, Func):
+            if issubclass(value.val1[0], (fn_op, fn_partial)):
+                return value
+        value.deref()
+        return None
+
     def new_continuation(self, fn : Func, args : Element, env : SymbolTable) -> None:
         self.continuations.append(Continuation(fn, args, env))
 
@@ -452,7 +464,12 @@ class WorkItem:
         assert self.finished()
         r = self.continuations[0].args.bumpref()
         self.continuations.pop().deref()
-        return r
+        if r.is_bll() or r.is_error():
+            return r
+        else:
+            err = Error(f"result was not bll {r}")
+            r.deref()
+            return err
 
 def symbolic_eval(sexpr, globalsyms):
     wi = WorkItem.begin(sexpr, globalsyms)
@@ -496,7 +513,7 @@ def compile_expr(sexpr, globalidx, localidx):
     elif sexpr.is_symbol():
         s = ResolveIndex(sexpr.val2, globalidx, localidx)
         if s is None:
-            raise Exception("invalid symbol")
+            raise Exception(f"invalid symbol {sexpr.val2}")
         return Atom(s.position)
     else:
         assert isinstance(sexpr, Cons) and isinstance(sexpr.val1, Symbol)
@@ -504,6 +521,14 @@ def compile_expr(sexpr, globalidx, localidx):
         if symname == 'q':
             assert sexpr.val2.is_bll()
             return Cons(Atom(0), sexpr.val2.bumpref())
+        elif symname == "report":
+            if isinstance(sexpr.val2, Cons):
+                return compile_expr(sexpr.val2.val1, globalidx, localidx)
+            elif sexpr.val2.is_nil():
+                # weird thing to do
+                return compile_expr(sexpr.val2, globalidx, localidx)
+            else:
+                raise Exception(f"report with improper list {sexpr}")
         elif symname == 'if':
             assert sexpr.val2.is_cons()
             cond_expr = compile_expr(sexpr.val2.val1, globalidx, localidx)
@@ -523,6 +548,17 @@ def compile_expr(sexpr, globalidx, localidx):
                 return SExpr.list_to_element([OpAtom("a"), i_expr])
             else:
                 raise Exception("invalid if expression")
+        elif symname == "partial":
+            args = sexpr.val2
+            if not isinstance(args, Cons):
+                raise Exception("partial requires an argument")
+            fn, rest = args.val1, args.val2
+            l = compile_args(rest, globalidx, localidx)
+            if isinstance(fn, Symbol) and fn.val2 in SExpr_FUNCS:
+                return Cons(OpAtom(symname), Cons(Cons(Atom(0), OpAtom(fn.val2)), l))
+            else:
+                fn = compile_expr(fn, globalidx, localidx)
+                return Cons(OpAtom(symname), Cons(fn, l))
         elif symname in SExpr_FUNCS:
             l = compile_args(sexpr.val2, globalidx, localidx)
             return Cons(OpAtom(symname), l)
