@@ -30,7 +30,7 @@ The following special opcodes are defined:
  * `(q . X)` aka `(nil . X)` -- quote operation, returning X literally
  * `(a EXPR ENV)` -- evaluate EXPR with ENV as its environment
  * `(sf XX)` -- softfork behaviour; unimplemented
- * `(partial XX)` -- partial evaluation; unimplemented
+ * `(partial FN ARGS)` -- partial opcode application (X=(partial + 1 2 3); 6=(partial X))
 
 The following normal opcodes are defined:
 
@@ -120,7 +120,7 @@ Additionally, there are the following special symbols:
 
  * `(q . X)` -- quoting
  * `(sf XX)` -- softfork behaviour; unimplemented
- * `(partial XX)` -- partial evaluation; unimplemented
+ * `(partial XX)` -- partial application
  * `(if COND THEN ELSE)` -- lazily evaluated version of `(i ...)`
  * `(report VAL NOTES...)` -- prints the value of its arguments on stdout, and
    returns its first argument, used for debugging
@@ -161,7 +161,7 @@ offers the following commands:
    * `step` -- take one step forward in the evaluation
    * `next` -- step through any sub evaluations
    * `cont` -- finish evaluating
-   * `trace` -- finish evaluating, but report on every step taken
+   * `trace` -- finish evaluating, but print every step taken
 
  * Compilation:
    * `compile SYMBLL` -- compile a symbll expression to bll code (symbols compile to env references)
