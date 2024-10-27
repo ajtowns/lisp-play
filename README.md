@@ -1,6 +1,8 @@
 
 # bllsh - A bullish shell for a bitcoin lisp language
 
+![](bllsh-beach-sml.jpg)
+
 ## bll - The Basic Bitcoin Lisp Language
 
 To start: bll is the basic bitcoin lisp language. Programs in this
