@@ -32,7 +32,7 @@ The following special opcodes are defined:
  * `(q . X)` aka `(nil . X)` -- quote operation, returning X literally
  * `(a EXPR ENV)` -- evaluate EXPR with ENV as its environment
  * `(sf XX)` -- softfork behaviour; unimplemented
- * `(partial FN ARGS)` -- partial opcode application (X=(partial + 1 2 3); 6=(partial X))
+ * `(partial FN ARGS)` -- partial application of normal opcodes (`X=(partial + 1 2 3)`; `Y=(partial + 4)`; `10=(partial Y)`)
 
 The following normal opcodes are defined:
 
