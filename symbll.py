@@ -8,7 +8,7 @@ import functools
 from dataclasses import dataclass, field
 from typing import List, Optional, Any
 
-from element import Element, SExpr, Atom, Cons, Error, Func, FuncClass, Symbol
+from element import ALLOCATOR, Element, SExpr, Atom, Cons, Error, Func, FuncClass, Symbol
 from opcodes import SExpr_FUNCS, Op_FUNCS, Opcode
 from bll import OpAtom
 from workitem import fn_fin, fn_quote, fn_op, fn_partial
@@ -413,6 +413,7 @@ class WorkItem:
     globalsyms: SymbolTable
     continuations: List[Continuation]
     dummylocalsyms: SymbolTable
+    costleft: int = 100000
 
     @classmethod
     def begin(cls, sexpr, syms):
@@ -443,6 +444,11 @@ class WorkItem:
         c = self.continuations.pop()
         fnobj, state = c.fn.steal_func()
         fnobj.step(state, c.args, c.localsyms, self)
+        self.costleft -= 1
+        if self.costleft <= 0 and self.continuations[-1].fn.val1[0] != fn_fin:
+            self.error("cost overrun, aborting")
+        if ALLOCATOR.x > 400000:
+            self.error("memory overrun, aborting")
 
     def feedback(self, value : Element) -> None:
         if isinstance(value, Error):

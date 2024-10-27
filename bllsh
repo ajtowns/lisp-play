@@ -127,13 +127,14 @@ class BTCLispRepl(cmd.Cmd):
     @handle_exc
     def do_blleval(self, arg):
         before = ALLOCATOR.x
+        ALLOCATOR.max = 0
 
         prog, env = self.bllparse(arg)
         r = bll.eval(prog, env)
 
         print(r)
         r.deref()
-        print(f"allocation: {before} -> {ALLOCATOR.x}")
+        print(f"allocation: {before} -> {ALLOCATOR.x} (max: {ALLOCATOR.max})")
         if before < ALLOCATOR.x:
             print("allocated:")
             for x in ALLOCATOR.allocated:
@@ -151,6 +152,7 @@ class BTCLispRepl(cmd.Cmd):
     @handle_exc
     def do_compile(self, arg):
         before = ALLOCATOR.x
+
         s = SExpr.parse(arg)
         r = symbll.compile_expr(s, symbll.SymbolIndex(self.symbols, offset=2), symbll.SymbolIndex([], offset=3))
         print(r)
@@ -174,11 +176,12 @@ class BTCLispRepl(cmd.Cmd):
     @handle_exc
     def do_eval(self, arg):
         before = ALLOCATOR.x
+        ALLOCATOR.max = 0
         s = SExpr.parse(arg)
         r = symbll.symbolic_eval(s, self.symbols)
         print(r)
         r.deref()
-        print(f"allocation: {before} -> {ALLOCATOR.x}")
+        print(f"allocation: {before} -> {ALLOCATOR.x} (max: {ALLOCATOR.max})")
         if before < ALLOCATOR.x:
             print("allocated:")
             for x in ALLOCATOR.allocated:
