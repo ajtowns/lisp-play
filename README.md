@@ -283,6 +283,6 @@ The tail-recursive version looks like:
 This becomes the following bll program:
 
 ```
->>> program F
+>>> program FTR
 (1 (nil 1 2) (6 1 (10 (nil 1 (5 5 (nil 1 2 (6 (10 (24 5 (nil . 1)) (25 5 7)) 2)) (nil . 7))))))
 ```
